@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dota Social Feed (OpenDota)</title>
+<style>
+:root{
+  --bg:#0b0f14;--card:#0f1722;--muted:#94a3b8;--text:#e2e8f0;
+  --accent:#7c3aed;--good:#22c55e;--bad:#ef4444;--meta:#9333ea;
+  --chip:#1f2937;--chipText:#d1d5db;--badge:#0b1220;--hover:#0e1524;
+}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica Neue,Arial}
+.container{max-width:1100px;margin:0 auto;padding:22px}
+header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.title{font-weight:800;font-size:clamp(22px,4vw,34px)}
+.subtitle{color:var(--muted)}
+.btn{border:0;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700}
+.btn.small{padding:6px 10px;font-size:12px;border-radius:10px}
+.grid{display:grid;grid-template-columns:1fr;gap:16px}
+@media(min-width:980px){.grid{grid-template-columns:360px 1fr}}
+.card{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;overflow:hidden}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:var(--chip);color:var(--chipText);font-weight:700;font-size:12px}
+
+/* Facts */
+.facts{display:flex;flex-direction:column;gap:14px}
+.fact-card{border:1px solid #1f2937;border-radius:16px;padding:12px;background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,0))}
+.fact-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap}
+.avatar{width:40px;height:40px;border-radius:50%;object-fit:cover}
+.fact-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.fact-item{background:#0c1422;border:1px solid #203049;border-radius:12px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.fact-item.best{background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.4)}
+.hero-thumb{width:50px;height:30px;border-radius:8px;object-fit:cover}
+.small{font-size:12px;color:var(--muted)}
+.compare{margin-top:8px;background:#0c1422;border:1px dashed #2b3a56;border-radius:12px;padding:10px}
+
+/* Feed */
+.feed{display:flex;flex-direction:column;gap:22px}
+.post{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;box-shadow:0 10px 24px rgba(0,0,0,.25)}
+.post.win{border-left:5px solid var(--good)}
+.post.lose{border-left:5px solid var(--bad)}
+.post-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.post-avatars{display:flex}
+.post-avatars img{width:34px;height:34px;border-radius:50%;border:2px solid #111827;margin-left:-8px}
+.hero{display:inline-flex;align-items:center;gap:6px}
+.hero img{width:52px;height:28px;border-radius:6px;object-fit:cover}
+.badge{display:inline-flex;align-items:center;font-weight:900;letter-spacing:.3px;padding:4px 10px;border-radius:999px;background:var(--badge);border:1px solid #22314b}
+.badge.win{color:var(--good);border-color:rgba(34,197,94,.45)}
+.badge.lose{color:var(--bad);border-color:rgba(239,68,68,.45)}
+.meta{color:var(--meta);font-weight:700;margin-top:6px}
+.divider{height:1px;background:#1f2937;margin:10px 0}
+.spinner{width:22px;height:22px;border:3px solid #233048;border-top-color:#9aa6bd;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Modal */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50}
+.modal{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;width:min(720px,95vw);max-height:85vh;overflow:auto}
+.thumb{width:60px;height:36px;border-radius:8px;object-fit:cover;box-shadow:0 0 0 1px #25324a}
+.player-vs-pro{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
+.player-card,.pro-card{flex:1;display:flex;flex-direction:column;align-items:center;text-align:center}
+.player-card img,.pro-card img{width:64px;height:64px;border-radius:50%;border:2px solid #1e293b}
+.vs-text{font-size:20px;font-weight:800;color:var(--accent)}
+.overlap-strip{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;background:linear-gradient(90deg,rgba(124,58,237,.15),rgba(124,58,237,.02));border:1px solid #2a3450;padding:10px;border-radius:12px;margin:12px 0}
+.note{background:linear-gradient(180deg,rgba(76,29,149,.22),rgba(76,29,149,.05));border:1px solid #382766;padding:10px;border-radius:12px;text-align:center}
+.close-x{border:0;background:#182033;color:#cdd5e1;border-radius:10px;padding:6px 10px;cursor:pointer}
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <div class="title">Dota Social Feed</div>
+        <div class="subtitle">Newest-first posts • last 30 games • top-10 teams (fuzzy)</div>
+      </div>
+      <button id="refreshBtn" class="btn" style="margin-left:auto">Refresh</button>
+    </header>
+
+    <div class="grid">
+      <aside class="card">
+        <h3>Interesting Facts & Comparisons</h3>
+        <div id="facts" class="facts"></div>
+      </aside>
+      <main class="card">
+        <h3>Match Feed</h3>
+        <div id="feed" class="feed"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div id="modalBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 id="modalTitle">Similar Pro</h3>
+        <button class="close-x" onclick="closeModal()">Close</button>
+      </div>
+      <div id="modalBody"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+<script>
+/* ---------- Config ---------- */
+const IDS=[39984287,50423134,53635813,86890516,26467713,81305221,60472352];
+const VALID_GAME_MODES=[1,2,3,4,22];
+const VALID_LOBBY_TYPES=[0,7];
+const MAX_DETAILED_MATCHES=15, RATE_DELAY_OK=300, RATE_DELAY_429=1500;
+
+/* ---------- API ---------- */
+const API={
+  heroes:()=>fetch('https://api.opendota.com/api/heroStats').then(r=>r.json()),
+  profile:id=>fetch(`https://api.opendota.com/api/players/${id}`).then(r=>r.json()),
+  recent:id=>fetch(`https://api.opendota.com/api/players/${id}/recentMatches?limit=30`).then(r=>r.json()),
+  recent28: async id => {
+    try {
+      const r = await fetch(`https://api.opendota.com/api/players/${id}/matches?date=28`);
+      if (!r.ok) throw new Error("Bad status "+r.status);
+      const data = await r.json();
+      return Array.isArray(data)?data:[];
+    } catch(e){ console.warn("recent28 failed", id, e); return []; }
+  },
+  match:mid=>fetch(`https://api.opendota.com/api/matches/${mid}`),
+  allHeroes:id=>fetch(`https://api.opendota.com/api/players/${id}/heroes`).then(r=>r.json())
+};
+
+/* ---------- Helpers ---------- */
+const HEROES={}, MATCH_CACHE=new Map();
+const delay=ms=>new Promise(r=>setTimeout(r,ms));
+const fmtPct=n=>((n||0)*100).toFixed(1)+'%';
+const pad=n=>String(n).padStart(2,'0');
+const fmtDur=s=>`${Math.floor(s/60)}:${pad(s%60)}`;
+const isWin=m=>(m.player_slot<128&&m.radiant_win)||(m.player_slot>=128&&!m.radiant_win);
+const heroName=id=>HEROES[id]?.localized_name||'Unknown';
+const heroKey=id=>HEROES[id]?.name?.replace('npc_dota_hero_','')||'abaddon';
+const heroImg=id=>`https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${heroKey(id)}.png`;
+
+function filterRealGames(list){
+  return (list||[]).filter(m=>
+    VALID_GAME_MODES.includes(m.game_mode) &&
+    VALID_LOBBY_TYPES.includes(m.lobby_type) &&
+    (m.duration||0)>300 &&
+    (m.leaver_status||0)===0
+  );
+}
+function aggregateFacts(matches,recent28){
+  const total=matches.length||1;
+  const wins=matches.filter(isWin).length;
+  const kills=matches.reduce((a,m)=>a+(m.kills||0),0);
+  const deaths=matches.reduce((a,m)=>a+(m.deaths||0),0);
+  const assists=matches.reduce((a,m)=>a+(m.assists||0),0);
+  const kda=(kills+assists)/Math.max(1,deaths);
+  const gpm=matches.reduce((a,m)=>a+(m.gold_per_min||0),0)/total;
+  const xpm=matches.reduce((a,m)=>a+(m.xp_per_min||0),0)/total;
+  const hCount=new Map();
+  matches.forEach(m=>hCount.set(m.hero_id,(hCount.get(m.hero_id)||0)+1));
+  const mostHero=[...hCount.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
+  const unique=hCount.size;
+  const recentCount=filterRealGames(recent28).length;
+  return {wins,total,kda,gpm,xpm,mostHero,unique,recentCount};
+}
+
+/* ---------- Render Facts ---------- */
+function renderFacts(players){
+  const facts=document.getElementById('facts');facts.innerHTML='';
+  for(const p of players){
+    const F=aggregateFacts(filterRealGames(p.matches),p.recent28);
+    const wr=(F.wins/F.total*100).toFixed(1);
+    const mostHeroImg=F.mostHero?heroImg(F.mostHero):'';
+    facts.innerHTML+=`
+      <div class="fact-card">
+        <div class="fact-head">
+          <div style="display:flex;align-items:center;gap:10px">
+            <img class="avatar" src="${p.profile.profile?.avatarfull||''}"/>
+            <div><b>${p.profile.profile?.personaname||'Unknown'}</b><div class="small">${F.wins}/${F.total-F.wins} • ${wr}%</div></div>
+          </div>
+        </div>
+        <div class="fact-grid">
+          <div class="fact-item"><small>KDA</small><b>${F.kda.toFixed(1)}</b></div>
+          <div class="fact-item"><small>GPM</small><b>${F.gpm.toFixed(0)}</b></div>
+          <div class="fact-item"><small>XPM</small><b>${F.xpm.toFixed(0)}</b></div>
+          <div class="fact-item"><small>Unique Heroes</small><b>${F.unique}</b></div>
+          <div class="fact-item"><small>Games (28d)</small><b>${F.recentCount}</b></div>
+          <div class="fact-item"><small>Most Played</small><img class="hero-thumb" src="${mostHeroImg}"></div>
+        </div>
+      </div>`;
+  }
+}
+
+/* ---------- Render Feed ---------- */
+async function renderFeed(players){
+  const feed=document.getElementById('feed');feed.innerHTML='';
+  const all=[];
+  for(const p of players){for(const m of p.matches){all.push({p,m});}}
+  all.sort((a,b)=>b.m.start_time-a.m.start_time);
+  for(const x of all.slice(0,30)){
+    const win=isWin(x.m);
+    const badge=`<span class='badge ${win?'win':'lose'}'>${win?'WIN':'LOSS'}</span>`;
+    feed.innerHTML+=`
+      <article class='post ${win?'win':'lose'}'>
+        <div class='post-row'>${badge}<img src="${x.p.profile.profile?.avatarfull||''}" class="avatar small"><span>${x.p.profile.profile?.personaname||'Unknown'}</span></div>
+        <div class="post-row small"><img src="${heroImg(x.m.hero_id)}" class="hero-thumb"> ${x.m.kills}/${x.m.deaths}/${x.m.assists} • ${fmtDur(x.m.duration)} • <a href="https://www.opendota.com/matches/${x.m.match_id}" target="_blank">OpenDota →</a></div>
+      </article>`;
+  }
+}
+
+/* ---------- Bootstrap ---------- */
+async function bootstrap(){
+  document.getElementById('feed').innerHTML='<div class="post-row"><div class="spinner"></div><span class="small"> Loading…</span></div>';
+  document.getElementById('facts').innerHTML='<div class="post-row"><div class="spinner"></div><span class="small"> Loading…</span></div>';
+  try{
+    const heroList=await API.heroes();heroList.forEach(h=>HEROES[h.id]=h);
+  }catch(e){console.warn("heroStats failed",e);}
+  const players=[];
+  for(const id of IDS){
+    try{
+      const profile=await API.profile(id);
+      const matches=await API.recent(id);
+      const allHeroes=await API.allHeroes(id);
+      const recent28=await API.recent28(id);
+      players.push({id,profile,matches,allHeroes,recent28});
+      await delay(200);
+    }catch(e){console.warn("player failed",id,e);}
+  }
+  if(players.length===0){
+    document.getElementById('facts').innerHTML='<div class="note">Failed to load any player data.</div>';
+    document.getElementById('feed').innerHTML='<div class="note">Failed to load feed.</div>';
+    return;
+  }
+  renderFacts(players);
+  await renderFeed(players);
+}
+
+document.getElementById('refreshBtn').addEventListener('click',bootstrap);
+bootstrap();
+</script>
+</body>
+</html>
