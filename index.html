@@ -51,48 +51,19 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 
 /* Feed */
 .feed{display:flex;flex-direction:column;gap:22px}
-.post{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;box-shadow:0 10px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:16px}
+.post{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;box-shadow:0 10px 24px rgba(0,0,0,.25)}
 .post.win{border-left:5px solid var(--good)}
 .post.lose{border-left:5px solid var(--bad)}
-.post.mixed{border-left:5px solid #facc15}
-.post-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.post-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:15px;font-weight:600}
-.post-names{display:flex;flex-wrap:wrap;gap:6px}
-.post-names span{background:#111a2a;border-radius:999px;padding:4px 10px;font-size:12px}
-.post-meta{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
-.badge{display:inline-flex;align-items:center;font-weight:900;letter-spacing:.3px;padding:4px 12px;border-radius:999px;background:var(--badge);border:1px solid #22314b}
+.post-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.post-avatars{display:flex}
+.post-avatars img{width:34px;height:34px;border-radius:50%;border:2px solid #111827;margin-left:-8px}
+.hero{display:inline-flex;align-items:center;gap:6px}
+.hero img{width:52px;height:28px;border-radius:6px;object-fit:cover}
+.badge{display:inline-flex;align-items:center;font-weight:900;letter-spacing:.3px;padding:4px 10px;border-radius:999px;background:var(--badge);border:1px solid #22314b}
 .badge.win{color:var(--good);border-color:rgba(34,197,94,.45)}
 .badge.lose{color:var(--bad);border-color:rgba(239,68,68,.45)}
-.badge.mixed{color:#facc15;border-color:rgba(250,204,21,.4)}
-.post-players{display:flex;flex-direction:column;gap:16px}
-.player-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-radius:16px;background:#0c1422;border:1px solid #1f2937;box-shadow:0 10px 24px rgba(0,0,0,.2)}
-.player-main{display:grid;grid-template-columns:44px 1fr;align-items:center;gap:14px}
-.player-main .avatar{width:44px;height:44px;border-radius:14px;object-fit:cover;box-shadow:0 0 0 2px #121c2f}
-.player-text{display:flex;flex-direction:column;gap:10px;min-width:0}
-.player-name{font-weight:700;font-size:15px;color:var(--text);word-break:break-word}
-.player-hero{display:flex;align-items:center;gap:10px}
-.player-hero img{width:42px;height:42px;border-radius:12px;object-fit:cover;box-shadow:0 6px 14px rgba(0,0,0,.35)}
-.hero-text{display:flex;flex-direction:column;gap:4px}
-.hero-name{font-weight:600;font-size:13px;color:var(--text)}
-.hero-detail{font-size:12px;color:var(--muted)}
-.player-stats{display:flex;flex-direction:column;align-items:flex-end;gap:10px}
-.kda-group{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
-.kda-chip{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 12px;border-radius:14px;background:#111827;border:1px solid #1f2937;min-width:70px;box-shadow:0 6px 16px rgba(0,0,0,.25)}
-.kda-chip .label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.kda-chip .value{font-size:18px;font-weight:800}
-.kda-chip.kills .value{color:var(--good)}
-.kda-chip.deaths .value{color:var(--bad)}
-.kda-chip.assists .value{color:#38bdf8}
-.player-extra{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.metric-chip{padding:4px 8px;border-radius:999px;background:#111827;border:1px solid #1f2937;font-size:11px;color:var(--muted);letter-spacing:.04em;font-weight:600}
-.post-link{margin-left:auto}
-.post-link a{color:#60a5fa;text-decoration:none;font-weight:600}
-.post-link a:hover{text-decoration:underline}
-.match-duration{font-weight:600;color:var(--text)}
-.post-avatars{display:flex}
-.post-avatars img{width:34px;height:34px;border-radius:50%;border:2px solid #111827;margin-left:-8px;object-fit:cover}
-.post-avatars img:first-child{margin-left:0}
-@media(max-width:680px){.player-entry{grid-template-columns:1fr}.player-stats{align-items:flex-start}.player-extra{justify-content:flex-start}.kda-group{justify-content:flex-start}}
+.meta{color:var(--meta);font-weight:700;margin-top:6px}
+.divider{height:1px;background:#1f2937;margin:10px 0}
 .spinner{width:22px;height:22px;border:3px solid #233048;border-top-color:#9aa6bd;border-radius:50%;animation:spin 1s linear infinite}
 .spinner.tiny{width:14px;height:14px;border-width:2px}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -348,38 +319,19 @@ function renderFeed(players){
     }).join('');
     const playersMarkup=group.players.map(({player,match})=>{
       const persona=player.profile.profile?.personaname||'Unknown';
-      const hero=heroName(match.hero_id);
-      const heroSrc=heroImg(match.hero_id);
-      const level=match.level??'—';
-      const gpm=match.gold_per_min!=null?Math.round(match.gold_per_min):'—';
-      const xpm=match.xp_per_min!=null?Math.round(match.xp_per_min):'—';
-      const lastHits=match.last_hits??'—';
       return `
         <div class="player-entry">
           <div class="player-main">
             <img src="${player.profile.profile?.avatarfull||''}" class="avatar" alt="${persona}">
-            <div class="player-text">
-              <div class="player-name">${persona}</div>
-              <div class="player-hero">
-                <img src="${heroSrc}" alt="${hero}">
-                <div class="hero-text">
-                  <div class="hero-name">${hero}</div>
-                  <div class="hero-detail">Level ${level}</div>
-                </div>
-              </div>
+            <div>
+              <div><strong>${persona}</strong></div>
+              <div class="player-hero"><img src="${heroImg(match.hero_id)}" alt="${heroName(match.hero_id)}"><span>${heroName(match.hero_id)}</span></div>
             </div>
           </div>
-          <div class="player-stats">
-            <div class="kda-group">
-              <div class="kda-chip kills"><span class="label">Kills</span><span class="value">${match.kills??0}</span></div>
-              <div class="kda-chip deaths"><span class="label">Deaths</span><span class="value">${match.deaths??0}</span></div>
-              <div class="kda-chip assists"><span class="label">Assists</span><span class="value">${match.assists??0}</span></div>
-            </div>
-            <div class="player-extra">
-              <span class="metric-chip">GPM ${gpm}</span>
-              <span class="metric-chip">XPM ${xpm}</span>
-              <span class="metric-chip">LH ${lastHits}</span>
-            </div>
+          <div class="kda-chips">
+            <span class="kda-chip kills">${match.kills||0} K</span>
+            <span class="kda-chip deaths">${match.deaths||0} D</span>
+            <span class="kda-chip assists">${match.assists||0} A</span>
           </div>
         </div>`;
     }).join('');
