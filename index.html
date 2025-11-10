@@ -51,37 +51,19 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 
 /* Feed */
 .feed{display:flex;flex-direction:column;gap:22px}
-.post{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;box-shadow:0 10px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:16px}
+.post{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;box-shadow:0 10px 24px rgba(0,0,0,.25)}
 .post.win{border-left:5px solid var(--good)}
 .post.lose{border-left:5px solid var(--bad)}
-.post.mixed{border-left:5px solid #facc15}
-.post-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.post-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:15px;font-weight:600}
-.post-names{display:flex;flex-wrap:wrap;gap:6px}
-.post-names span{background:#111a2a;border-radius:999px;padding:4px 10px;font-size:12px}
-.post-meta{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
-.badge{display:inline-flex;align-items:center;font-weight:900;letter-spacing:.3px;padding:4px 12px;border-radius:999px;background:var(--badge);border:1px solid #22314b}
+.post-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.post-avatars{display:flex}
+.post-avatars img{width:34px;height:34px;border-radius:50%;border:2px solid #111827;margin-left:-8px}
+.hero{display:inline-flex;align-items:center;gap:6px}
+.hero img{width:52px;height:28px;border-radius:6px;object-fit:cover}
+.badge{display:inline-flex;align-items:center;font-weight:900;letter-spacing:.3px;padding:4px 10px;border-radius:999px;background:var(--badge);border:1px solid #22314b}
 .badge.win{color:var(--good);border-color:rgba(34,197,94,.45)}
 .badge.lose{color:var(--bad);border-color:rgba(239,68,68,.45)}
-.badge.mixed{color:#facc15;border-color:rgba(250,204,21,.4)}
-.post-players{display:flex;flex-direction:column;gap:12px}
-.player-entry{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 14px;border-radius:14px;background:#0c1422;border:1px solid #1f2937;flex-wrap:wrap}
-.player-main{display:flex;align-items:center;gap:12px}
-.player-main .avatar{width:38px;height:38px;border-radius:50%;object-fit:cover}
-.player-hero{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
-.player-hero img{width:46px;height:26px;border-radius:6px;object-fit:cover}
-.kda-chips{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700}
-.kda-chip{padding:4px 10px;border-radius:999px;background:#111827;border:1px solid #1f2937}
-.kda-chip.kills{color:var(--good);border-color:rgba(34,197,94,.4)}
-.kda-chip.deaths{color:var(--bad);border-color:rgba(239,68,68,.4)}
-.kda-chip.assists{color:#38bdf8;border-color:rgba(56,189,248,.4)}
-.post-link{margin-left:auto}
-.post-link a{color:#60a5fa;text-decoration:none;font-weight:600}
-.post-link a:hover{text-decoration:underline}
-.match-duration{font-weight:600;color:var(--text)}
-.post-avatars{display:flex}
-.post-avatars img{width:34px;height:34px;border-radius:50%;border:2px solid #111827;margin-left:-8px;object-fit:cover}
-.post-avatars img:first-child{margin-left:0}
+.meta{color:var(--meta);font-weight:700;margin-top:6px}
+.divider{height:1px;background:#1f2937;margin:10px 0}
 .spinner{width:22px;height:22px;border:3px solid #233048;border-top-color:#9aa6bd;border-radius:50%;animation:spin 1s linear infinite}
 .spinner.tiny{width:14px;height:14px;border-width:2px}
 @keyframes spin{to{transform:rotate(360deg)}}
