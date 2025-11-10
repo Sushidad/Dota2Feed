@@ -18,6 +18,14 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 .subtitle{color:var(--muted)}
 .btn{border:0;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700}
 .btn.small{padding:6px 10px;font-size:12px;border-radius:10px}
+.status-panel{margin:12px 0 20px;background:#0c1422;border:1px solid #1f2937;border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.status-title{font-weight:700;font-size:14px}
+.status-log{display:flex;flex-direction:column;gap:8px;font-size:13px}
+.status-row{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.status-row.success{color:var(--good)}
+.status-row.error{color:var(--bad)}
+.status-row.pending{color:var(--muted)}
+.status-symbol{font-size:15px;line-height:1}
 .grid{display:grid;grid-template-columns:1fr;gap:16px}
 @media(min-width:980px){.grid{grid-template-columns:360px 1fr}}
 .card{background:var(--card);border:1px solid #1f2937;border-radius:18px;padding:16px;overflow:hidden}
@@ -51,6 +59,7 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 .meta{color:var(--meta);font-weight:700;margin-top:6px}
 .divider{height:1px;background:#1f2937;margin:10px 0}
 .spinner{width:22px;height:22px;border:3px solid #233048;border-top-color:#9aa6bd;border-radius:50%;animation:spin 1s linear infinite}
+.spinner.tiny{width:14px;height:14px;border-width:2px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* Modal */
@@ -75,6 +84,11 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
       </div>
       <button id="refreshBtn" class="btn" style="margin-left:auto">Refresh</button>
     </header>
+
+    <div class="status-panel">
+      <div class="status-title">OpenDota connection</div>
+      <div id="statusLog" class="status-log"></div>
+    </div>
 
     <div class="grid">
       <aside class="card">
@@ -120,11 +134,64 @@ const API={
     } catch(e){ console.warn("recent28 failed", id, e); return []; }
   },
   match:mid=>fetch(`https://api.opendota.com/api/matches/${mid}`),
-  allHeroes:id=>fetch(`https://api.opendota.com/api/players/${id}/heroes`).then(r=>r.json())
+  allHeroes: async id => {
+    try{
+      const r=await fetch(`https://api.opendota.com/api/players/${id}/heroes`);
+      if(!r.ok) throw new Error('Bad status '+r.status);
+      const data=await r.json();
+      return Array.isArray(data)?data:[];
+    }catch(e){
+      console.warn('allHeroes failed',id,e);
+      return [];
+    }
+  }
 };
 
 /* ---------- Helpers ---------- */
 const HEROES={}, MATCH_CACHE=new Map();
+const statusLogEl=document.getElementById('statusLog');
+
+function resetStatus(){
+  if(statusLogEl){
+    statusLogEl.innerHTML='';
+  }
+}
+
+function statusStep(message){
+  if(!statusLogEl){
+    return {update(){}};
+  }
+  const row=document.createElement('div');
+  row.className='status-row pending';
+  const spinner=document.createElement('div');
+  spinner.className='spinner tiny';
+  const text=document.createElement('span');
+  text.textContent=message;
+  row.appendChild(spinner);
+  row.appendChild(text);
+  statusLogEl.appendChild(row);
+  return {
+    update(type,messageText){
+      const mode=type||'pending';
+      row.className='status-row '+mode;
+      row.innerHTML='';
+      if(mode==='pending'){
+        const sp=document.createElement('div');
+        sp.className='spinner tiny';
+        row.appendChild(sp);
+      }else{
+        const symbol=document.createElement('span');
+        symbol.className='status-symbol';
+        symbol.textContent=mode==='error'?'⚠️':'✅';
+        row.appendChild(symbol);
+      }
+      const msg=document.createElement('span');
+      msg.textContent=messageText;
+      row.appendChild(msg);
+    }
+  };
+}
+
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
 const fmtPct=n=>((n||0)*100).toFixed(1)+'%';
 const pad=n=>String(n).padStart(2,'0');
@@ -205,29 +272,58 @@ async function renderFeed(players){
 
 /* ---------- Bootstrap ---------- */
 async function bootstrap(){
-  document.getElementById('feed').innerHTML='<div class="post-row"><div class="spinner"></div><span class="small"> Loading…</span></div>';
-  document.getElementById('facts').innerHTML='<div class="post-row"><div class="spinner"></div><span class="small"> Loading…</span></div>';
+  resetStatus();
+  const startStep=statusStep('Starting refresh…');
+  const feedEl=document.getElementById('feed');
+  const factsEl=document.getElementById('facts');
+  if(feedEl){feedEl.innerHTML='<div class="post-row"><div class="spinner"></div><span class="small"> Loading…</span></div>';} 
+  if(factsEl){factsEl.innerHTML='<div class="post-row"><div class="spinner"></div><span class="small"> Loading…</span></div>';} 
+  startStep.update('success','Refresh started.');
+
+  const heroStep=statusStep('Fetching hero stats from OpenDota…');
   try{
-    const heroList=await API.heroes();heroList.forEach(h=>HEROES[h.id]=h);
-  }catch(e){console.warn("heroStats failed",e);}
+    const heroList=await API.heroes();
+    heroList.forEach(h=>HEROES[h.id]=h);
+    heroStep.update('success',`Loaded ${heroList.length} hero definitions.`);
+  }catch(e){
+    console.warn('heroStats failed',e);
+    heroStep.update('error','Failed to load hero stats (continuing without updates).');
+  }
+
   const players=[];
   for(const id of IDS){
+    const playerStep=statusStep(`Connecting to OpenDota for player ${id}…`);
+    let profile;
     try{
-      const profile=await API.profile(id);
+      profile=await API.profile(id);
+      const persona=profile.profile?.personaname||`Player ${id}`;
+      playerStep.update('pending',`Profile loaded for ${persona}. Fetching recent matches…`);
       const matches=await API.recent(id);
+      playerStep.update('pending',`Matches received for ${persona}. Fetching hero history…`);
       const allHeroes=await API.allHeroes(id);
       const recent28=await API.recent28(id);
       players.push({id,profile,matches,allHeroes,recent28});
+      playerStep.update('success',`Finished loading data for ${persona}.`);
       await delay(200);
-    }catch(e){console.warn("player failed",id,e);}
+    }catch(e){
+      const persona=profile?.profile?.personaname||`Player ${id}`;
+      playerStep.update('error',`Failed while loading data for ${persona}.`);
+      console.warn('player failed',id,e);
+    }
   }
+
   if(players.length===0){
-    document.getElementById('facts').innerHTML='<div class="note">Failed to load any player data.</div>';
-    document.getElementById('feed').innerHTML='<div class="note">Failed to load feed.</div>';
+    const failStep=statusStep('Finalizing…');
+    failStep.update('error','Unable to load any player data from OpenDota.');
+    if(factsEl){factsEl.innerHTML='<div class="note">Failed to load any player data.</div>';} 
+    if(feedEl){feedEl.innerHTML='<div class="note">Failed to load feed.</div>';} 
     return;
   }
+
+  const renderStep=statusStep('Rendering results…');
   renderFacts(players);
   await renderFeed(players);
+  renderStep.update('success','Feed updated successfully.');
 }
 
 document.getElementById('refreshBtn').addEventListener('click',bootstrap);
