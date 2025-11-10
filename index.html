@@ -9,6 +9,7 @@
   --bg:#0b0f14;--card:#0f1722;--muted:#94a3b8;--text:#e2e8f0;
   --accent:#7c3aed;--good:#22c55e;--bad:#ef4444;--meta:#9333ea;
   --chip:#1f2937;--chipText:#d1d5db;--badge:#0b1220;--hover:#0e1524;
+  --gold:rgba(250,204,21,.25);
 }
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica Neue,Arial}
@@ -36,9 +37,14 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 .fact-card{border:1px solid #1f2937;border-radius:16px;padding:12px;background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(0,0,0,0))}
 .fact-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap}
 .avatar{width:40px;height:40px;border-radius:50%;object-fit:cover}
-.fact-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.fact-item{background:#0c1422;border:1px solid #203049;border-radius:12px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}
-.fact-item.best{background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.4)}
+.fact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.fact-item{background:#0c1422;border:1px solid #203049;border-radius:12px;padding:10px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
+.fact-item.best{background:linear-gradient(180deg,var(--gold),rgba(250,204,21,.05));border-color:rgba(250,204,21,.6);box-shadow:0 0 0 1px rgba(250,204,21,.25)}
+.fact-item.best b{color:#facc15}
+.hero-pair{display:flex;align-items:center;gap:6px}
+.hero-tag{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:10px;background:#111a2a;border:1px solid #1f2f49;font-size:11px;font-weight:600}
+.hero-tag img{width:34px;height:20px;border-radius:6px;object-fit:cover}
+.hero-tag span{color:var(--muted)}
 .hero-thumb{width:50px;height:30px;border-radius:8px;object-fit:cover}
 .small{font-size:12px;color:var(--muted)}
 .compare{margin-top:8px;background:#0c1422;border:1px dashed #2b3a56;border-radius:12px;padding:10px}
@@ -200,6 +206,7 @@ const isWin=m=>(m.player_slot<128&&m.radiant_win)||(m.player_slot>=128&&!m.radia
 const heroName=id=>HEROES[id]?.localized_name||'Unknown';
 const heroKey=id=>HEROES[id]?.name?.replace('npc_dota_hero_','')||'abaddon';
 const heroImg=id=>`https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${heroKey(id)}.png`;
+const fmtDate=ts=>ts?new Date(ts*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
 
 function filterRealGames(list){
   return (list||[]).filter(m=>
@@ -210,64 +217,143 @@ function filterRealGames(list){
   );
 }
 function aggregateFacts(matches,recent28){
-  const total=matches.length||1;
+  const total=matches.length;
+  const safeTotal=total||1;
   const wins=matches.filter(isWin).length;
   const kills=matches.reduce((a,m)=>a+(m.kills||0),0);
   const deaths=matches.reduce((a,m)=>a+(m.deaths||0),0);
   const assists=matches.reduce((a,m)=>a+(m.assists||0),0);
   const kda=(kills+assists)/Math.max(1,deaths);
-  const gpm=matches.reduce((a,m)=>a+(m.gold_per_min||0),0)/total;
-  const xpm=matches.reduce((a,m)=>a+(m.xp_per_min||0),0)/total;
+  const gpm=matches.reduce((a,m)=>a+(m.gold_per_min||0),0)/safeTotal;
+  const xpm=matches.reduce((a,m)=>a+(m.xp_per_min||0),0)/safeTotal;
   const hCount=new Map();
   matches.forEach(m=>hCount.set(m.hero_id,(hCount.get(m.hero_id)||0)+1));
-  const mostHero=[...hCount.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0];
+  const heroOrder=[...hCount.entries()].sort((a,b)=>b[1]-a[1]);
+  const topHeroes=heroOrder.slice(0,2).map(([id,count])=>({id,count}));
   const unique=hCount.size;
   const recentCount=filterRealGames(recent28).length;
-  return {wins,total,kda,gpm,xpm,mostHero,unique,recentCount};
+  const winRate=total?wins/total:0;
+  return {wins,total,kda,gpm,xpm,topHeroes,unique,recentCount,winRate};
 }
 
 /* ---------- Render Facts ---------- */
 function renderFacts(players){
   const facts=document.getElementById('facts');facts.innerHTML='';
-  for(const p of players){
-    const F=aggregateFacts(filterRealGames(p.matches),p.recent28);
-    const wr=(F.wins/F.total*100).toFixed(1);
-    const mostHeroImg=F.mostHero?heroImg(F.mostHero):'';
-    facts.innerHTML+=`
+  const stats=players.map(p=>{
+    const data=aggregateFacts(filterRealGames(p.matches),p.recent28);
+    return {...data,player:p};
+  });
+  const metrics={
+    kda:s=>s.kda,
+    gpm:s=>s.gpm,
+    xpm:s=>s.xpm,
+    unique:s=>s.unique,
+    recentCount:s=>s.recentCount,
+    winRate:s=>s.winRate
+  };
+  const best={};
+  for(const [key,getter] of Object.entries(metrics)){
+    best[key]=Math.max(...stats.map(getter));
+  }
+  const isBest=(stat,key)=>{
+    const target=best[key];
+    return stat[key]!==undefined && Math.abs(stat[key]-target)<0.0001;
+  };
+  const markup=stats.map(stat=>{
+    const p=stat.player;
+    const persona=p.profile.profile?.personaname||'Unknown';
+    const total=stat.total;
+    const losses=Math.max(0,total-stat.wins);
+    const heroTags=stat.topHeroes.length?stat.topHeroes.map(h=>`<span class="hero-tag" title="${heroName(h.id)}"><img src="${heroImg(h.id)}" alt="${heroName(h.id)}"><span>${h.count}</span></span>`).join(''):'<span class="small">No games</span>';
+    return `
       <div class="fact-card">
         <div class="fact-head">
           <div style="display:flex;align-items:center;gap:10px">
             <img class="avatar" src="${p.profile.profile?.avatarfull||''}"/>
-            <div><b>${p.profile.profile?.personaname||'Unknown'}</b><div class="small">${F.wins}/${F.total-F.wins} • ${wr}%</div></div>
+            <div><b>${persona}</b><div class="small">${stat.wins}/${losses} • ${fmtPct(stat.winRate)}</div></div>
           </div>
         </div>
         <div class="fact-grid">
-          <div class="fact-item"><small>KDA</small><b>${F.kda.toFixed(1)}</b></div>
-          <div class="fact-item"><small>GPM</small><b>${F.gpm.toFixed(0)}</b></div>
-          <div class="fact-item"><small>XPM</small><b>${F.xpm.toFixed(0)}</b></div>
-          <div class="fact-item"><small>Unique Heroes</small><b>${F.unique}</b></div>
-          <div class="fact-item"><small>Games (28d)</small><b>${F.recentCount}</b></div>
-          <div class="fact-item"><small>Most Played</small><img class="hero-thumb" src="${mostHeroImg}"></div>
+          <div class="fact-item ${isBest(stat,'winRate')?'best':''}"><small>Win Rate</small><b>${fmtPct(stat.winRate)}</b></div>
+          <div class="fact-item ${isBest(stat,'kda')?'best':''}"><small>KDA</small><b>${stat.kda.toFixed(1)}</b></div>
+          <div class="fact-item ${isBest(stat,'gpm')?'best':''}"><small>GPM</small><b>${stat.gpm.toFixed(0)}</b></div>
+          <div class="fact-item ${isBest(stat,'xpm')?'best':''}"><small>XPM</small><b>${stat.xpm.toFixed(0)}</b></div>
+          <div class="fact-item ${isBest(stat,'unique')?'best':''}"><small>Unique Heroes</small><b>${stat.unique}</b></div>
+          <div class="fact-item ${isBest(stat,'recentCount')?'best':''}"><small>Games (28d)</small><b>${stat.recentCount}</b></div>
+          <div class="fact-item"><small>Top Heroes</small><div class="hero-pair">${heroTags}</div></div>
         </div>
       </div>`;
-  }
+  }).join('');
+  facts.innerHTML=markup;
 }
 
 /* ---------- Render Feed ---------- */
-async function renderFeed(players){
+function renderFeed(players){
   const feed=document.getElementById('feed');feed.innerHTML='';
-  const all=[];
-  for(const p of players){for(const m of p.matches){all.push({p,m});}}
-  all.sort((a,b)=>b.m.start_time-a.m.start_time);
-  for(const x of all.slice(0,30)){
-    const win=isWin(x.m);
-    const badge=`<span class='badge ${win?'win':'lose'}'>${win?'WIN':'LOSS'}</span>`;
-    feed.innerHTML+=`
-      <article class='post ${win?'win':'lose'}'>
-        <div class='post-row'>${badge}<img src="${x.p.profile.profile?.avatarfull||''}" class="avatar small"><span>${x.p.profile.profile?.personaname||'Unknown'}</span></div>
-        <div class="post-row small"><img src="${heroImg(x.m.hero_id)}" class="hero-thumb"> ${x.m.kills}/${x.m.deaths}/${x.m.assists} • ${fmtDur(x.m.duration)} • <a href="https://www.opendota.com/matches/${x.m.match_id}" target="_blank">OpenDota →</a></div>
-      </article>`;
+  const groups=new Map();
+  for(const p of players){
+    const validMatches=filterRealGames(p.matches);
+    for(const m of validMatches){
+      const key=m.match_id;
+      if(!groups.has(key)){
+        groups.set(key,{match:m,players:[]});
+      }
+      groups.get(key).players.push({player:p,match:m});
+    }
   }
+  const posts=[...groups.values()].sort((a,b)=> (b.match.start_time||0)-(a.match.start_time||0)).slice(0,30);
+  if(posts.length===0){
+    feed.innerHTML='<div class="note">No recent matches to display.</div>';
+    return;
+  }
+  feed.innerHTML=posts.map(group=>{
+    const wins=group.players.filter(x=>isWin(x.match)).length;
+    const losses=group.players.length-wins;
+    const mode=wins&&losses?'mixed':wins?'win':'lose';
+    const badgeText=wins&&losses?'MIXED':wins?'WIN':'LOSS';
+    const personas=group.players.map(x=>x.player.profile.profile?.personaname||'Unknown');
+    const names=personas.map(name=>`<span>${name}</span>`).join('');
+    const avatarList=group.players.map(({player})=>{
+      const persona=player.profile.profile?.personaname||'Unknown';
+      return `<img src="${player.profile.profile?.avatarfull||''}" alt="${persona}">`;
+    }).join('');
+    const playersMarkup=group.players.map(({player,match})=>{
+      const persona=player.profile.profile?.personaname||'Unknown';
+      return `
+        <div class="player-entry">
+          <div class="player-main">
+            <img src="${player.profile.profile?.avatarfull||''}" class="avatar" alt="${persona}">
+            <div>
+              <div><strong>${persona}</strong></div>
+              <div class="player-hero"><img src="${heroImg(match.hero_id)}" alt="${heroName(match.hero_id)}"><span>${heroName(match.hero_id)}</span></div>
+            </div>
+          </div>
+          <div class="kda-chips">
+            <span class="kda-chip kills">${match.kills||0} K</span>
+            <span class="kda-chip deaths">${match.deaths||0} D</span>
+            <span class="kda-chip assists">${match.assists||0} A</span>
+          </div>
+        </div>`;
+    }).join('');
+    return `
+      <article class="post ${mode}">
+        <div class="post-header">
+          <div class="post-title">
+            <span class="badge ${mode}">${badgeText}</span>
+            <div class="post-avatars">${avatarList}</div>
+            <div class="post-names">${names}</div>
+          </div>
+          <div class="post-meta">
+            <span class="match-duration">${fmtDur(group.match.duration||0)}</span>
+            <span>${fmtDate(group.match.start_time)}</span>
+            <div class="post-link"><a href="https://www.opendota.com/matches/${group.match.match_id}" target="_blank" rel="noopener">Match Details →</a></div>
+          </div>
+        </div>
+        <div class="post-players">
+          ${playersMarkup}
+        </div>
+      </article>`;
+  }).join('');
 }
 
 /* ---------- Bootstrap ---------- */
