@@ -210,34 +210,94 @@ const PRO_TEAM_WHITELIST = new Set([
   'BOOM Esports',
   'Team Nemesis'
 ]);
-const PRO_HERO_CONCURRENCY = 5;
+const PRO_HERO_CONCURRENCY = 3;
+const MAX_PROS_PER_TEAM = 6;
 const FANTASY_ROLES = {
   1: 'Core',
   2: 'Support'
 };
 
+const PLAYER_CONCURRENCY = 3;
+
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
+function createThrottle(interval) {
+  let last = 0;
+  let chain = Promise.resolve();
+  return function schedule(task) {
+    const run = chain.then(async () => {
+      const now = Date.now();
+      const wait = Math.max(0, last + interval - now);
+      if (wait) {
+        await delay(wait);
+      }
+      const result = await task();
+      last = Date.now();
+      return result;
+    });
+    chain = run.catch(() => {});
+    return run;
+  };
+}
+
+const scheduleApiRequest = createThrottle(160);
+const scheduleProRequest = createThrottle(320);
+
+async function fetchJson(url, {
+  scheduler = scheduleApiRequest,
+  retries = 2,
+  retryStatuses = [429, 500, 502, 503, 504],
+  retryDelay = RATE_DELAY_OK,
+  options = {}
+} = {}) {
+  let attempt = 0;
+  while (true) {
+    try {
+      const response = await scheduler(() => fetch(url, options));
+      if (!response.ok) {
+        const status = response.status;
+        const err = new Error('Bad status ' + status);
+        err.status = status;
+        throw err;
+      }
+      return await response.json();
+    } catch (err) {
+      const status = err?.status;
+      const shouldRetry = status ? retryStatuses.includes(status) : attempt < retries;
+      if (attempt < retries && shouldRetry) {
+        await delay(status === 429 ? RATE_DELAY_429 : retryDelay);
+        attempt += 1;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /* ---------- API ---------- */
 const API = {
-  heroes: () => fetch('https://api.opendota.com/api/heroStats').then(r => r.json()),
-  profile: id => fetch(`https://api.opendota.com/api/players/${id}`).then(r => r.json()),
-  recent: id => fetch(`https://api.opendota.com/api/players/${id}/recentMatches?limit=30`).then(r => r.json()),
+  heroes: () => fetchJson('https://api.opendota.com/api/heroStats'),
+  profile: id => fetchJson(`https://api.opendota.com/api/players/${id}`),
+  recent: id => fetchJson(`https://api.opendota.com/api/players/${id}/recentMatches?limit=30`),
   recent28: async id => {
     try {
-      const r = await fetch(`https://api.opendota.com/api/players/${id}/matches?date=28`);
-      if (!r.ok) throw new Error('Bad status ' + r.status);
-      const data = await r.json();
+      const data = await fetchJson(`https://api.opendota.com/api/players/${id}/matches?date=28`, {
+        retries: 3,
+        retryDelay: RATE_DELAY_OK * 2
+      });
       return Array.isArray(data) ? data : [];
     } catch (e) {
       console.warn('recent28 failed', id, e);
       return [];
     }
   },
-  match: mid => fetch(`https://api.opendota.com/api/matches/${mid}`),
+  match: mid => scheduleApiRequest(() => fetch(`https://api.opendota.com/api/matches/${mid}`)),
   allHeroes: async id => {
     try {
-      const r = await fetch(`https://api.opendota.com/api/players/${id}/heroes`);
-      if (!r.ok) throw new Error('Bad status ' + r.status);
-      const data = await r.json();
+      const data = await fetchJson(`https://api.opendota.com/api/players/${id}/heroes`, {
+        retries: 3,
+        retryDelay: RATE_DELAY_OK * 2
+      });
       return Array.isArray(data) ? data : [];
     } catch (e) {
       console.warn('allHeroes failed', id, e);
@@ -245,15 +305,18 @@ const API = {
     }
   },
   proPlayers: async () => {
-    const r = await fetch('https://api.opendota.com/api/proPlayers');
-    if (!r.ok) throw new Error('Bad status ' + r.status);
-    const data = await r.json();
+    const data = await fetchJson('https://api.opendota.com/api/proPlayers', {
+      retries: 3,
+      retryDelay: RATE_DELAY_OK * 2
+    });
     return Array.isArray(data) ? data : [];
   },
   proHeroes: async id => {
-    const r = await fetch(`https://api.opendota.com/api/players/${id}/heroes`);
-    if (!r.ok) throw new Error('Bad status ' + r.status);
-    const data = await r.json();
+    const data = await fetchJson(`https://api.opendota.com/api/players/${id}/heroes`, {
+      scheduler: scheduleProRequest,
+      retries: 4,
+      retryDelay: RATE_DELAY_OK * 2
+    });
     return Array.isArray(data) ? data : [];
   }
 };
@@ -319,7 +382,6 @@ function statusStep(message) {
   };
 }
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
 const fmtPct = n => ((n || 0) * 100).toFixed(1) + '%';
 const pad = n => String(n).padStart(2, '0');
 const fmtDur = s => `${Math.floor(s / 60)}:${pad(s % 60)}`;
@@ -360,12 +422,31 @@ function aggregateFacts(matches, recent28) {
 
 async function fetchProRoster() {
   if (!PRO_CACHE.rosterPromise) {
-    PRO_CACHE.rosterPromise = API.proPlayers().then(list =>
-      list.filter(p => {
-        const name = (p.team_name || '').trim();
-        return name && PRO_TEAM_WHITELIST.has(name);
-      })
-    );
+    PRO_CACHE.rosterPromise = API.proPlayers().then(list => {
+      const grouped = new Map();
+      (list || []).forEach(player => {
+        const teamName = (player.team_name || '').trim();
+        if (!teamName || !PRO_TEAM_WHITELIST.has(teamName)) return;
+        const accountId = player.account_id;
+        if (!accountId && accountId !== 0) return;
+        if (!grouped.has(teamName)) {
+          grouped.set(teamName, new Map());
+        }
+        const teamMap = grouped.get(teamName);
+        const existing = teamMap.get(accountId);
+        if (!existing || (player.last_played || 0) > (existing.last_played || 0)) {
+          teamMap.set(accountId, player);
+        }
+      });
+      const trimmed = [];
+      for (const teamMap of grouped.values()) {
+        const players = [...teamMap.values()]
+          .sort((a, b) => (b.last_played || 0) - (a.last_played || 0))
+          .slice(0, MAX_PROS_PER_TEAM);
+        trimmed.push(...players);
+      }
+      return trimmed;
+    });
   }
   try {
     const roster = await PRO_CACHE.rosterPromise;
@@ -381,35 +462,58 @@ async function fetchProHeroStats(accountId) {
   if (PRO_CACHE.heroMap.has(accountId)) {
     return PRO_CACHE.heroMap.get(accountId);
   }
-  const promise = API.proHeroes(accountId).catch(err => {
-    console.warn('proHeroes failed', accountId, err);
-    return [];
-  }).then(list => Array.isArray(list) ? list : []);
+  const promise = (async () => {
+    try {
+      const list = await API.proHeroes(accountId);
+      return Array.isArray(list) ? list : [];
+    } catch (err) {
+      console.warn('proHeroes failed', accountId, err);
+      throw err;
+    }
+  })();
   PRO_CACHE.heroMap.set(accountId, promise);
-  const resolved = await promise;
-  PRO_CACHE.heroMap.set(accountId, resolved);
-  return resolved;
+  try {
+    const resolved = await promise;
+    PRO_CACHE.heroMap.set(accountId, resolved);
+    return resolved;
+  } catch (err) {
+    PRO_CACHE.heroMap.delete(accountId);
+    throw err;
+  }
+}
+
+function normalizeHeroSample(entry) {
+  if (!entry || entry.hero_id == null) return null;
+  const heroId = Number(entry.hero_id);
+  if (!Number.isFinite(heroId)) return null;
+  return { ...entry, hero_id: heroId };
 }
 
 const getTopHeroes = (list, count) => [...(list || [])]
+  .map(normalizeHeroSample)
+  .filter(item => item && (item.games || 0) > 0)
   .sort((a, b) => (b.games || 0) - (a.games || 0))
   .slice(0, count);
 
 function computeSharedHeroes(playerTop, proTop) {
   const proMap = new Map();
   proTop.forEach(item => {
-    proMap.set(item.hero_id, item);
+    const normalized = normalizeHeroSample(item);
+    if (!normalized) return;
+    proMap.set(normalized.hero_id, normalized);
   });
   const shared = [];
   let score = 0;
   let weight = 0;
   for (const hero of playerTop) {
-    const match = proMap.get(hero.hero_id);
+    const normalized = normalizeHeroSample(hero);
+    if (!normalized) continue;
+    const match = proMap.get(normalized.hero_id);
     if (!match) continue;
     score += 1;
-    const combinedGames = (hero.games || 0) + (match.games || 0);
+    const combinedGames = (normalized.games || 0) + (match.games || 0);
     weight += combinedGames;
-    shared.push({ id: hero.hero_id, player: hero, pro: match, combinedGames });
+    shared.push({ id: normalized.hero_id, player: normalized, pro: match, combinedGames });
   }
   shared.sort((a, b) => (b.combinedGames || 0) - (a.combinedGames || 0));
   return { score, weight, shared };
@@ -471,6 +575,7 @@ async function findSimilarPro(playerId, onProgress, options = {}) {
     const limit = Math.min(PRO_HERO_CONCURRENCY, total) || 1;
     let index = 0;
     let processed = 0;
+    let skipped = 0;
     let best = null;
     notify('progress', `Compared 0/${total} pros…`);
 
@@ -484,7 +589,13 @@ async function findSimilarPro(playerId, onProgress, options = {}) {
           break;
         }
         const pro = roster[current];
-        const heroList = await fetchProHeroStats(pro.account_id);
+        let heroList = [];
+        try {
+          heroList = await fetchProHeroStats(pro.account_id);
+        } catch (err) {
+          skipped += 1;
+          console.warn('Skipping pro comparison due to fetch failure', pro.account_id, err);
+        }
         if (signal?.aborted) {
           throw abortError();
         }
@@ -506,6 +617,9 @@ async function findSimilarPro(playerId, onProgress, options = {}) {
     await Promise.all(Array.from({ length: limit }, () => worker()));
     if (signal?.aborted) {
       throw abortError();
+    }
+    if (skipped) {
+      notify('skipped', `Skipped ${skipped} pros because their hero pools were temporarily unavailable. They'll retry on the next search.`);
     }
     notify('done', 'Finished evaluating hero overlaps.');
 
@@ -876,32 +990,39 @@ async function bootstrap() {
 
   const players = [];
   PLAYER_MAP.clear();
-  for (const id of IDS) {
-    const playerStep = statusStep(`Connecting to OpenDota for player ${id}…`);
-    let profile;
-    try {
-      profile = await API.profile(id);
-      const persona = profile.profile?.personaname || `Player ${id}`;
-      playerStep.update('pending', `Profile loaded for ${persona}. Fetching recent matches…`);
-      const matches = await API.recent(id);
-      playerStep.update('pending', `Matches received for ${persona}. Fetching hero history…`);
-      const allHeroes = await API.allHeroes(id);
-      const recent28 = await API.recent28(id);
-      const record = { id, profile, matches, allHeroes, recent28 };
-      players.push(record);
-      PLAYER_MAP.set(id, record);
-      SIMILAR_CACHE.delete(id);
-      playerStep.update('success', `Finished loading data for ${persona}.`);
-      await delay(RATE_DELAY_OK);
-    } catch (e) {
-      const persona = profile?.profile?.personaname || `Player ${id}`;
-      playerStep.update('error', `Failed while loading data for ${persona}.`);
-      console.warn('player failed', id, e);
-      PLAYER_MAP.delete(id);
-      SIMILAR_CACHE.delete(id);
-      await delay(RATE_DELAY_429);
+  let pointer = 0;
+
+  async function loadPlayerBatch() {
+    while (pointer < IDS.length) {
+      const id = IDS[pointer++];
+      const playerStep = statusStep(`Connecting to OpenDota for player ${id}…`);
+      let profile;
+      try {
+        profile = await API.profile(id);
+        const persona = profile.profile?.personaname || `Player ${id}`;
+        playerStep.update('pending', `Profile loaded for ${persona}. Fetching recent matches…`);
+        const matches = await API.recent(id);
+        playerStep.update('pending', `Matches received for ${persona}. Fetching hero history…`);
+        const allHeroes = await API.allHeroes(id);
+        const recent28 = await API.recent28(id);
+        const record = { id, profile, matches, allHeroes, recent28 };
+        players.push(record);
+        PLAYER_MAP.set(id, record);
+        SIMILAR_CACHE.delete(id);
+        playerStep.update('success', `Finished loading data for ${persona}.`);
+      } catch (e) {
+        const persona = profile?.profile?.personaname || `Player ${id}`;
+        playerStep.update('error', `Failed while loading data for ${persona}.`);
+        console.warn('player failed', id, e);
+        PLAYER_MAP.delete(id);
+        SIMILAR_CACHE.delete(id);
+        await delay(RATE_DELAY_429);
+      }
     }
   }
+
+  await Promise.all(Array.from({ length: Math.min(PLAYER_CONCURRENCY, IDS.length) }, () => loadPlayerBatch()));
+  players.sort((a, b) => IDS.indexOf(a.id) - IDS.indexOf(b.id));
 
   if (players.length === 0) {
     const failStep = statusStep('Finalizing…');
