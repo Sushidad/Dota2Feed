@@ -20,6 +20,7 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 .btn{border:0;background:var(--accent);color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700}
 .btn.small{padding:6px 10px;font-size:12px;border-radius:10px}
 .status-panel{margin:12px 0 20px;background:#0c1422;border:1px solid #1f2937;border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.status-panel.hidden{display:none}
 .status-title{font-weight:700;font-size:14px}
 .status-log{display:flex;flex-direction:column;gap:8px;font-size:13px}
 .status-row{display:flex;align-items:center;gap:8px;color:var(--muted)}
@@ -67,7 +68,7 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 .badge.mixed{color:#facc15;border-color:rgba(250,204,21,.4)}
 .post-players{display:flex;flex-direction:column;gap:16px}
 .player-entry{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px;padding:14px 16px;border-radius:16px;background:#0c1422;border:1px solid #1f2937;box-shadow:0 10px 24px rgba(0,0,0,.2)}
-.player-main{display:grid;grid-template-columns:44px 1fr;align-items:center;gap:14px}
+.player-main{display:grid;grid-template-columns:1fr;align-items:center;gap:14px}
 .player-main .avatar{width:44px;height:44px;border-radius:14px;object-fit:cover;box-shadow:0 0 0 2px #121c2f}
 .player-text{display:flex;flex-direction:column;gap:10px;min-width:0}
 .player-name{font-weight:700;font-size:15px;color:var(--text);word-break:break-word}
@@ -151,7 +152,7 @@ header{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:10p
 
 <script>
 /* ---------- Config ---------- */
-const IDS=[39984287,50423134,53635813,86890516,26467713,81305221,60472352];
+const IDS=[39984287,50423134,53635813,86890516,26467713,81305221,27081071];
 const VALID_GAME_MODES=[1,2,3,4,22];
 const VALID_LOBBY_TYPES=[0,7];
 const MAX_DETAILED_MATCHES=15, RATE_DELAY_OK=300, RATE_DELAY_429=1500;
@@ -186,10 +187,22 @@ const API={
 /* ---------- Helpers ---------- */
 const HEROES={}, MATCH_CACHE=new Map();
 const statusLogEl=document.getElementById('statusLog');
+const statusPanel=statusLogEl?.closest('.status-panel')||null;
 
 function resetStatus(){
   if(statusLogEl){
     statusLogEl.innerHTML='';
+  }
+  if(statusPanel){
+    statusPanel.classList.remove('hidden');
+    statusPanel.setAttribute('aria-hidden','false');
+  }
+}
+
+function collapseStatusPanel(){
+  if(statusPanel){
+    statusPanel.classList.add('hidden');
+    statusPanel.setAttribute('aria-hidden','true');
   }
 }
 
@@ -366,7 +379,6 @@ function renderFeed(players){
       return `
         <div class="player-entry">
           <div class="player-main">
-            <img src="${player.profile.profile?.avatarfull||''}" class="avatar" alt="${persona}">
             <div class="player-text">
               <div class="player-name">${persona}</div>
               <div class="player-hero">
