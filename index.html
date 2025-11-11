@@ -56,6 +56,7 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .facts { display: flex; flex-direction: column; gap: 14px; }
 .fact-card { border: 1px solid #1f2937; border-radius: 16px; padding: 12px; background: linear-gradient(180deg, rgba(255, 255, 255, .03), rgba(0, 0, 0, 0)); }
 .fact-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; }
+.fact-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
 .fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .fact-item { background: #0c1422; border: 1px solid #203049; border-radius: 12px; padding: 10px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
@@ -125,6 +126,19 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 /* Modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: none; align-items: center; justify-content: center; z-index: 50; }
 .modal { background: var(--card); border: 1px solid #1f2937; border-radius: 18px; padding: 16px; width: min(720px, 95vw); max-height: 85vh; overflow: auto; }
+.modal h4 { margin: 0; }
+.modal-section { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.modal-pro { display: flex; align-items: center; gap: 12px; }
+.modal-pro img { width: 56px; height: 56px; border-radius: 16px; object-fit: cover; }
+.modal-meta { color: var(--muted); font-size: 13px; }
+.modal-meta a { color: #60a5fa; text-decoration: none; font-weight: 600; }
+.modal-meta a:hover { text-decoration: underline; }
+.shared-heroes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.shared-card { background: #0c1422; border: 1px solid #1f2937; border-radius: 14px; padding: 10px; display: flex; gap: 10px; align-items: center; }
+.shared-card img { width: 56px; height: 32px; border-radius: 10px; object-fit: cover; }
+.shared-body { display: flex; flex-direction: column; gap: 6px; }
+.shared-body .title { font-weight: 600; font-size: 14px; color: var(--text); }
+.shared-body .metrics { font-size: 12px; color: var(--muted); }
 .close-x { border: 0; background: #182033; color: #cdd5e1; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
 </style>
 </head>
@@ -174,6 +188,28 @@ const VALID_LOBBY_TYPES = [0, 7];
 const MAX_DETAILED_MATCHES = 15;
 const RATE_DELAY_OK = 300;
 const RATE_DELAY_429 = 1500;
+const PRO_TEAM_WHITELIST = new Set([
+  'Team Falcons',
+  'Xtreme Gaming',
+  'BetBoom Team',
+  'PVISION',
+  'Team Tidebound',
+  'HEROIC',
+  'Aurora Gaming',
+  'Team Liquid',
+  'Nigma Galaxy',
+  'Tundra Esports',
+  'Yakult Brothers',
+  'Team Spirit',
+  'Wildcard',
+  'Natus Vincere',
+  'BOOM Esports',
+  'Team Nemesis'
+]);
+const FANTASY_ROLES = {
+  1: 'Core',
+  2: 'Support'
+};
 
 /* ---------- API ---------- */
 const API = {
@@ -202,11 +238,26 @@ const API = {
       console.warn('allHeroes failed', id, e);
       return [];
     }
+  },
+  proPlayers: async () => {
+    const r = await fetch('https://api.opendota.com/api/proPlayers');
+    if (!r.ok) throw new Error('Bad status ' + r.status);
+    const data = await r.json();
+    return Array.isArray(data) ? data : [];
+  },
+  proHeroes: async id => {
+    const r = await fetch(`https://api.opendota.com/api/players/${id}/heroes`);
+    if (!r.ok) throw new Error('Bad status ' + r.status);
+    const data = await r.json();
+    return Array.isArray(data) ? data : [];
   }
 };
 
 /* ---------- Helpers ---------- */
 const HEROES = {};
+const PLAYER_MAP = new Map();
+const SIMILAR_CACHE = new Map();
+const PRO_CACHE = { rosterPromise: null, heroMap: new Map() };
 const statusLogEl = document.getElementById('statusLog');
 const statusPanel = statusLogEl?.closest('.status-panel') || null;
 
@@ -301,6 +352,189 @@ function aggregateFacts(matches, recent28) {
   return { wins, total, kda, gpm, xpm, topHeroes, unique, recentCount, winRate };
 }
 
+async function fetchProRoster() {
+  if (!PRO_CACHE.rosterPromise) {
+    PRO_CACHE.rosterPromise = API.proPlayers().then(list =>
+      list.filter(p => {
+        const name = (p.team_name || '').trim();
+        return name && PRO_TEAM_WHITELIST.has(name);
+      })
+    );
+  }
+  try {
+    const roster = await PRO_CACHE.rosterPromise;
+    return Array.isArray(roster) ? roster : [];
+  } catch (err) {
+    console.warn('proPlayers failed', err);
+    PRO_CACHE.rosterPromise = null;
+    return [];
+  }
+}
+
+async function fetchProHeroStats(accountId) {
+  if (PRO_CACHE.heroMap.has(accountId)) {
+    return PRO_CACHE.heroMap.get(accountId);
+  }
+  const promise = API.proHeroes(accountId).catch(err => {
+    console.warn('proHeroes failed', accountId, err);
+    return [];
+  }).then(list => Array.isArray(list) ? list : []);
+  PRO_CACHE.heroMap.set(accountId, promise);
+  const resolved = await promise;
+  PRO_CACHE.heroMap.set(accountId, resolved);
+  return resolved;
+}
+
+const getTopHeroes = (list, count) => [...(list || [])]
+  .sort((a, b) => (b.games || 0) - (a.games || 0))
+  .slice(0, count);
+
+function computeSharedHeroes(playerTop, proTop) {
+  const proMap = new Map();
+  proTop.forEach(item => {
+    proMap.set(item.hero_id, item);
+  });
+  const shared = [];
+  let score = 0;
+  let weight = 0;
+  for (const hero of playerTop) {
+    const match = proMap.get(hero.hero_id);
+    if (!match) continue;
+    score += 1;
+    const combinedGames = (hero.games || 0) + (match.games || 0);
+    weight += combinedGames;
+    shared.push({ id: hero.hero_id, player: hero, pro: match, combinedGames });
+  }
+  shared.sort((a, b) => (b.combinedGames || 0) - (a.combinedGames || 0));
+  return { score, weight, shared };
+}
+
+const fmtHeroWinRate = (win, games) => {
+  if (!games) return '—';
+  return `${Math.round((win || 0) / games * 100)}% win`; 
+};
+
+async function findSimilarPro(playerId) {
+  if (SIMILAR_CACHE.has(playerId)) {
+    return SIMILAR_CACHE.get(playerId);
+  }
+  const promise = (async () => {
+    const player = PLAYER_MAP.get(playerId);
+    if (!player) {
+      return null;
+    }
+    const playerTop = getTopHeroes(player.allHeroes, 6);
+    if (playerTop.length === 0) {
+      return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
+    }
+    const roster = await fetchProRoster();
+    if (!roster.length) {
+      return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
+    }
+    let best = null;
+    for (const pro of roster) {
+      const heroList = await fetchProHeroStats(pro.account_id);
+      if (!heroList.length) continue;
+      const proTop = getTopHeroes(heroList, 10);
+      const overlap = computeSharedHeroes(playerTop, proTop);
+      if (!overlap.score) continue;
+      if (!best || overlap.score > best.overlap.score ||
+        (overlap.score === best.overlap.score && overlap.weight > best.overlap.weight)) {
+        best = { pro, overlap, proTop };
+      }
+    }
+    if (!best) {
+      return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
+    }
+    return { pro: best.pro, overlap: best.overlap, playerTop, proTop: best.proTop };
+  })();
+  SIMILAR_CACHE.set(playerId, promise);
+  const resolved = await promise;
+  SIMILAR_CACHE.set(playerId, resolved);
+  return resolved;
+}
+
+function renderSimilarModal(playerId, result) {
+  const player = PLAYER_MAP.get(playerId);
+  const persona = player?.profile?.profile?.personaname || `Player ${playerId}`;
+  if (!result || !player) {
+    return {
+      title: `Similar pro for ${persona}`,
+      body: '<p class="small">Unable to gather enough data for this player right now.</p>'
+    };
+  }
+  const playerHeroes = result.playerTop?.map(h => heroName(h.hero_id)).join(', ');
+  if (!result.pro || !result.overlap?.score) {
+    return {
+      title: `Similar pro for ${persona}`,
+      body: `<div class="modal-section"><p>We couldn't find an overlapping hero specialist among the tracked teams for ${persona} yet.</p>${playerHeroes ? `<p class="small">Tracked heroes: ${playerHeroes}</p>` : ''}</div>`
+    };
+  }
+  const pro = result.pro;
+  const shared = result.overlap.shared.slice(0, 3);
+  const proName = pro.name || pro.personaname || 'Unknown Pro';
+  const team = (pro.team_name || '').trim();
+  const country = (pro.loccountrycode || '').trim();
+  const role = FANTASY_ROLES[pro.fantasy_role] || '';
+  const heroCards = shared.length ? shared.map(item => {
+    const hero = heroName(item.id);
+    const img = heroImg(item.id);
+    const playerWin = fmtHeroWinRate(item.player.win, item.player.games);
+    const proWin = fmtHeroWinRate(item.pro.win, item.pro.games);
+    return `
+      <div class="shared-card">
+        <img src="${img}" alt="${hero}">
+        <div class="shared-body">
+          <div class="title">${hero}</div>
+          <div class="metrics">${persona}: ${item.player.games} games • ${playerWin}<br>${proName}: ${item.pro.games} games • ${proWin}</div>
+        </div>
+      </div>
+    `;
+  }).join('') : '<div class="small">No overlapping heroes found.</div>';
+  const metaBits = [];
+  if (team) metaBits.push(team);
+  if (country) metaBits.push(`Country: ${country}`);
+  if (role) metaBits.push(`Role: ${role}`);
+  const meta = metaBits.join(' • ');
+  const playerTopList = result.playerTop
+    ? result.playerTop.slice(0, 6).map(h => heroName(h.hero_id)).join(', ')
+    : '';
+  const profileLink = `https://www.opendota.com/players/${pro.account_id}`;
+  const body = `
+    <div class="modal-section">
+      <div class="modal-pro">
+        <img src="${pro.avatarfull || pro.avatarmedium || ''}" alt="${proName}">
+        <div>
+          <h4>${proName}</h4>
+          <div class="modal-meta">${meta || 'No additional team info available'}</div>
+        </div>
+      </div>
+      <div class="modal-meta">Comparing against ${persona}'s most played heroes (${playerTopList || '—'}).</div>
+      <div class="modal-meta">Shared comfort picks (${shared.length} of your top 6 heroes overlap with the pro's top 10):</div>
+      <div class="shared-heroes">${heroCards}</div>
+      <div class="modal-meta"><a href="${profileLink}" target="_blank" rel="noopener">View ${proName}'s OpenDota profile →</a></div>
+    </div>
+  `;
+  return {
+    title: `Similar pro for ${persona}`,
+    body
+  };
+}
+
+async function showSimilarPro(playerId) {
+  const player = PLAYER_MAP.get(playerId);
+  const persona = player?.profile?.profile?.personaname || `Player ${playerId}`;
+  openModal(`Finding similar pro for ${persona}…`, '<div class="modal-section"><div class="spinner"></div></div>');
+  try {
+    const result = await findSimilarPro(playerId);
+    const modalContent = renderSimilarModal(playerId, result);
+    openModal(modalContent.title, modalContent.body);
+  } catch (e) {
+    console.warn('showSimilarPro failed', playerId, e);
+    openModal(`Similar pro for ${persona}`, '<p class="small">Something went wrong while searching for a comparable pro player. Please try again later.</p>');
+  }
+}
+
 /* ---------- Render Facts ---------- */
 function renderFacts(players) {
   const facts = document.getElementById('facts');
@@ -351,9 +585,20 @@ function renderFacts(players) {
           <div class="fact-item ${isBest(stat, 'recentCount') ? 'best' : ''}"><small>Games (28d)</small><b>${stat.recentCount}</b></div>
           <div class="fact-item"><small>Top Heroes</small><div class="hero-pair">${heroTags}</div></div>
         </div>
+        <div class="fact-actions">
+          <button class="btn small" data-similar="${p.id}">Find similar pro</button>
+        </div>
       </div>`;
   }).join('');
   facts.innerHTML = markup;
+  const buttons = facts.querySelectorAll('button[data-similar]');
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const playerId = Number(btn.getAttribute('data-similar'));
+      if (!Number.isFinite(playerId)) return;
+      showSimilarPro(playerId);
+    });
+  });
 }
 
 /* ---------- Render Feed ---------- */
@@ -445,7 +690,23 @@ function renderFeed(players) {
   }).join('');
 }
 
-/* ---------- Modal Helpers (placeholder) ---------- */
+/* ---------- Modal Helpers ---------- */
+function openModal(title, bodyHtml) {
+  const backdrop = document.getElementById('modalBackdrop');
+  const body = document.getElementById('modalBody');
+  const titleEl = document.getElementById('modalTitle');
+  if (titleEl) {
+    titleEl.textContent = title;
+  }
+  if (body) {
+    body.innerHTML = bodyHtml;
+  }
+  if (backdrop) {
+    backdrop.style.display = 'flex';
+    backdrop.setAttribute('aria-hidden', 'false');
+  }
+}
+
 function closeModal() {
   const backdrop = document.getElementById('modalBackdrop');
   if (backdrop) {
@@ -475,6 +736,7 @@ async function bootstrap() {
   }
 
   const players = [];
+  PLAYER_MAP.clear();
   for (const id of IDS) {
     const playerStep = statusStep(`Connecting to OpenDota for player ${id}…`);
     let profile;
@@ -486,13 +748,18 @@ async function bootstrap() {
       playerStep.update('pending', `Matches received for ${persona}. Fetching hero history…`);
       const allHeroes = await API.allHeroes(id);
       const recent28 = await API.recent28(id);
-      players.push({ id, profile, matches, allHeroes, recent28 });
+      const record = { id, profile, matches, allHeroes, recent28 };
+      players.push(record);
+      PLAYER_MAP.set(id, record);
+      SIMILAR_CACHE.delete(id);
       playerStep.update('success', `Finished loading data for ${persona}.`);
       await delay(RATE_DELAY_OK);
     } catch (e) {
       const persona = profile?.profile?.personaname || `Player ${id}`;
       playerStep.update('error', `Failed while loading data for ${persona}.`);
       console.warn('player failed', id, e);
+      PLAYER_MAP.delete(id);
+      SIMILAR_CACHE.delete(id);
       await delay(RATE_DELAY_429);
     }
   }
@@ -513,6 +780,14 @@ async function bootstrap() {
 }
 
 document.getElementById('refreshBtn').addEventListener('click', bootstrap);
+const modalBackdrop = document.getElementById('modalBackdrop');
+if (modalBackdrop) {
+  modalBackdrop.addEventListener('click', event => {
+    if (event.target === modalBackdrop) {
+      closeModal();
+    }
+  });
+}
 bootstrap();
 </script>
 </body>
