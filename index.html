@@ -202,6 +202,8 @@ const VALID_LOBBY_TYPES = [0, 7];
 const MAX_DETAILED_MATCHES = 15;
 const RATE_DELAY_OK = 300;
 const RATE_DELAY_429 = 1500;
+const META_TRENDS_MAX_AGE = 1000 * 60 * 60; // 1 hour cache for weekly pro meta data
+const META_TOP_LIMIT = 20;
 const PRO_TEAM_WHITELIST = new Set([
   'Team Falcons',
   'Xtreme Gaming',
@@ -336,6 +338,7 @@ const HEROES = {};
 const PLAYER_MAP = new Map();
 const SIMILAR_CACHE = new Map();
 const META_CACHE = new Map();
+const META_TRENDS = { promise: null, data: null, fetchedAt: 0 };
 const PRO_CACHE = { rosterPromise: null, heroMap: new Map() };
 let activeSimilarJob = null;
 let activeMetaJob = null;
@@ -493,6 +496,89 @@ async function fetchProHeroStats(accountId) {
     PRO_CACHE.heroMap.delete(accountId);
     throw err;
   }
+}
+
+async function getWeeklyProMetaTrends(signal) {
+  if (signal?.aborted) {
+    throw abortError();
+  }
+  const cached = META_TRENDS.data;
+  const age = cached ? Date.now() - (META_TRENDS.fetchedAt || 0) : Infinity;
+  if (cached && age < META_TRENDS_MAX_AGE) {
+    return cached;
+  }
+  if (!META_TRENDS.promise) {
+    const url = new URL('https://api.opendota.com/api/heroStats');
+    url.searchParams.set('is_pro', '1');
+    url.searchParams.set('date', '7');
+    url.searchParams.set('game_mode', '2');
+    META_TRENDS.promise = (async () => {
+      const list = await fetchJson(url.toString(), {
+        retries: 3,
+        retryDelay: RATE_DELAY_OK * 2
+      });
+      const heroes = Array.isArray(list) ? list : [];
+      const enriched = heroes
+        .map(entry => {
+          const id = Number(entry.id ?? entry.hero_id);
+          if (!Number.isFinite(id)) return null;
+          const proPick = Number(entry.pro_pick) || 0;
+          const proBan = Number(entry.pro_ban) || 0;
+          const proWin = Number(entry.pro_win) || 0;
+          const presence = proPick + proBan;
+          if (presence <= 0) return null;
+          return { id, pro_pick: proPick, pro_ban: proBan, pro_win: proWin, presence };
+        })
+        .filter(Boolean)
+        .sort((a, b) => (b.presence || 0) - (a.presence || 0));
+      const top = enriched.slice(0, META_TOP_LIMIT);
+      const totalPresence = enriched.reduce((sum, hero) => sum + (hero.presence || 0), 0);
+      const map = new Map();
+      const listPayload = top.map((hero, index) => {
+        const payload = {
+          id: hero.id,
+          pro_pick: hero.pro_pick,
+          pro_ban: hero.pro_ban,
+          pro_win: hero.pro_win,
+          presence: hero.presence,
+          presencePct: totalPresence ? hero.presence / totalPresence : 0,
+          rank: index + 1
+        };
+        map.set(hero.id, payload);
+        return payload;
+      });
+      const data = {
+        list: listPayload,
+        map,
+        totalPresence,
+        fetchedAt: Date.now()
+      };
+      META_TRENDS.data = data;
+      META_TRENDS.fetchedAt = data.fetchedAt;
+      return data;
+    })().catch(err => {
+      META_TRENDS.data = null;
+      META_TRENDS.fetchedAt = 0;
+      throw err;
+    }).finally(() => {
+      META_TRENDS.promise = null;
+    });
+  }
+  const pending = META_TRENDS.promise;
+  if (pending) {
+    const data = await pending;
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    return data;
+  }
+  if (META_TRENDS.data) {
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    return META_TRENDS.data;
+  }
+  return { list: [], map: new Map(), totalPresence: 0, fetchedAt: Date.now() };
 }
 
 function normalizeHeroSample(entry) {
@@ -778,72 +864,73 @@ async function findMetaRecommendations(playerId, onProgress, options = {}) {
       notify('player', 'No hero history available for this player yet.');
       return { recommendations: [], playerTop: [] };
     }
-    notify('meta', 'Measuring those heroes against current pro picks & bans…');
+    notify('metaFetch', 'Collecting the last 7 days of pro drafts…');
+    let proMeta;
+    try {
+      proMeta = await getWeeklyProMetaTrends(signal);
+      const poolSize = proMeta?.list?.length || 0;
+      notify('metaFetch', `Loaded weekly pro draft trends (top ${poolSize} heroes).`);
+    } catch (err) {
+      console.warn('weeklyProMeta failed', err);
+      notify('metaFetch', 'Unable to load pro draft data right now.');
+      proMeta = { list: [], map: new Map(), totalPresence: 0, fetchedAt: Date.now() };
+    }
+    notify('metaCompare', 'Comparing your favourites against the pro meta…');
+    const metaMap = proMeta?.map instanceof Map ? proMeta.map : new Map();
+    const metaContext = {
+      topCount: metaMap.size,
+      totalPresence: proMeta?.totalPresence || 0,
+      fetchedAt: proMeta?.fetchedAt || Date.now()
+    };
     const decorated = playerTopRaw.map(sample => {
       const heroId = sample.hero_id;
-      const heroData = HEROES[heroId];
       const games = sample.games || 0;
       const wins = sample.win || 0;
       const playerWinRate = games ? wins / games : 0;
-      const base = {
+      const trend = metaMap.get(heroId);
+      const proPick = trend?.pro_pick || 0;
+      const proBan = trend?.pro_ban || 0;
+      const proWin = trend?.pro_win || 0;
+      const proWinRate = proPick ? proWin / proPick : 0;
+      return {
         heroId,
         heroName: heroName(heroId),
         heroImg: heroImg(heroId),
         playerGames: games,
         playerWins: wins,
         playerWinRate,
-        metaAvailable: Boolean(heroData)
-      };
-      if (!heroData) {
-        return { ...base, proPick: 0, proBan: 0, proWin: 0, proWinRate: 0, metaScore: 0, isMeta: false };
-      }
-      const proPick = heroData.pro_pick || 0;
-      const proBan = heroData.pro_ban || 0;
-      const proWin = heroData.pro_win || 0;
-      const metaScore = (proPick || 0) + (proBan || 0);
-      const proWinRate = proPick ? (proWin || 0) / proPick : 0;
-      return {
-        ...base,
+        inMeta: Boolean(trend),
+        metaRank: trend?.rank ?? null,
+        metaPresence: trend?.presence || 0,
+        metaPresencePct: trend?.presencePct || 0,
         proPick,
         proBan,
         proWin,
-        proWinRate,
-        metaScore,
-        isMeta: metaScore > 0
+        proWinRate
       };
     });
-    const withData = decorated.filter(item => item.metaAvailable);
-    const metaRich = withData
-      .filter(item => item.isMeta)
+    const metaMatches = decorated
+      .filter(item => item.inMeta)
       .sort((a, b) => {
-        const scoreDiff = (b.metaScore || 0) - (a.metaScore || 0);
-        if (scoreDiff) return scoreDiff;
+        const presenceDiff = (b.metaPresence || 0) - (a.metaPresence || 0);
+        if (presenceDiff) return presenceDiff;
         return (b.playerGames || 0) - (a.playerGames || 0);
       });
-    const lowMeta = withData
-      .filter(item => !item.isMeta)
-      .sort((a, b) => (b.playerGames || 0) - (a.playerGames || 0));
-    const missingMeta = decorated
-      .filter(item => !item.metaAvailable)
-      .sort((a, b) => (b.playerGames || 0) - (a.playerGames || 0));
-    const recommendations = [...metaRich.slice(0, 5)];
-    if (recommendations.length < 5) {
-      recommendations.push(...lowMeta.slice(0, 5 - recommendations.length));
-    }
-    if (recommendations.length < 5) {
-      recommendations.push(...missingMeta.slice(0, 5 - recommendations.length));
-    }
+    const recommendations = metaMatches.slice(0, 5);
     if (recommendations.length) {
-      const metaCount = recommendations.filter(item => item.isMeta).length;
-      notify('done', `Found ${recommendations.length} hero picks (${metaCount} with strong pro presence).`);
+      const label = recommendations.length === 1 ? 'hero' : 'heroes';
+      notify('done', `Matched ${recommendations.length} ${label} with this week's pro draft trends.`);
+    } else if (metaMap.size) {
+      notify('done', 'None of your top heroes overlap with this week’s pro drafts yet.');
     } else {
-      notify('done', 'No overlapping meta heroes found just yet.');
+      notify('done', 'Professional draft data is unavailable right now.');
     }
     return {
       recommendations,
       playerTop: decorated,
-      metaMatches: metaRich.length,
-      totalCandidates: decorated.length
+      metaMatches: metaMatches.length,
+      totalCandidates: decorated.length,
+      metaContext
     };
   })();
   META_CACHE.set(playerId, promise);
@@ -871,15 +958,13 @@ function renderMetaModal(playerId, result) {
   }
   const playerTopList = result.playerTop?.map(h => h.heroName).filter(Boolean).slice(0, 10).join(', ');
   const cards = (result.recommendations || []).map(item => {
-    const playerLine = `${item.playerGames || 0} games • ${fmtPct(item.playerWinRate)} win rate`;
-    const proLine = item.metaAvailable
-      ? `${fmtNumber(item.proPick)} picks • ${fmtNumber(item.proBan)} bans${item.proPick ? ` • ${fmtPct(item.proWinRate)} win rate` : ''}`
-      : 'No recent pro data';
-    const chip = item.metaAvailable
-      ? item.isMeta
-        ? '<span class="meta-chip hot">🔥 Meta favorite</span>'
-        : '<span class="meta-chip cold">⚠️ Low pro presence</span>'
-      : '<span class="meta-chip cold">ℹ️ No pro data</span>';
+    const playerLine = `${fmtNumber(item.playerGames || 0)} games • ${fmtPct(item.playerWinRate)} win rate`;
+    const proLine = item.inMeta
+      ? `${item.metaRank ? `#${item.metaRank}` : 'Top meta'} in pro drafts • ${fmtPct(item.metaPresencePct)} of picks & bans<br>${fmtNumber(item.proPick)} picks • ${fmtNumber(item.proBan)} bans${item.proPick ? ` • ${fmtPct(item.proWinRate)} win rate` : ''}`
+      : 'Outside this week’s top pro heroes';
+    const chip = item.inMeta
+      ? '<span class="meta-chip hot">🔥 Weekly meta pick</span>'
+      : '<span class="meta-chip cold">Outside weekly meta</span>';
     return `
       <div class="meta-card">
         <img src="${item.heroImg}" alt="${item.heroName}">
@@ -891,14 +976,23 @@ function renderMetaModal(playerId, result) {
       </div>
     `;
   }).join('');
-  const introText = result.recommendations?.length
-    ? 'These heroes appear in your top pool and line up with what pros are picking & banning right now.'
-    : 'We couldn\'t find any of your comfort heroes with strong pro presence yet. Keep grinding new games and try again soon!';
+  const recCount = result.recommendations?.length || 0;
+  const introText = recCount
+    ? `Pros have been heavily drafting these ${recCount === 1 ? 'hero' : 'heroes'} over the last 7 days, and they already sit in your comfort pool.`
+    : 'None of your comfort heroes overlap with the last 7 days of professional drafts yet. Keep playing and check back soon!';
   const metaOverlap = result.totalCandidates
     ? `<span class="small">Meta overlap: ${Math.min(result.metaMatches || 0, result.totalCandidates)} of your top ${result.totalCandidates} heroes are trending in pro drafts.</span>`
     : '';
+  const contextLine = (() => {
+    const ctx = result.metaContext;
+    if (!ctx) return '';
+    if (ctx.topCount) {
+      return `<span class="small">Data source: last 7 days of professional Captains Mode drafts (top ${ctx.topCount} heroes ranked by combined picks + bans).</span>`;
+    }
+    return '<span class="small">Professional meta data was unavailable during this check.</span>';
+  })();
   const heroLine = playerTopList ? `<span class="small">Your top heroes: ${playerTopList}</span>` : '';
-  const summary = [introText, metaOverlap, heroLine].filter(Boolean).join('<br>');
+  const summary = [introText, metaOverlap, contextLine, heroLine].filter(Boolean).join('<br>');
   const body = `
     <div class="modal-section">
       <div class="modal-meta">${summary}</div>
