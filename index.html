@@ -139,6 +139,10 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .shared-body { display: flex; flex-direction: column; gap: 6px; }
 .shared-body .title { font-weight: 600; font-size: 14px; color: var(--text); }
 .shared-body .metrics { font-size: 12px; color: var(--muted); }
+.modal-progress { gap: 16px; }
+.modal-progress-header { display: flex; align-items: center; gap: 10px; }
+.modal-progress-log { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); max-height: 220px; overflow-y: auto; }
+.modal-progress-row { background: #0c1422; border: 1px solid #1f2937; border-radius: 10px; padding: 6px 8px; }
 .close-x { border: 0; background: #182033; color: #cdd5e1; border-radius: 10px; padding: 6px 10px; cursor: pointer; }
 </style>
 </head>
@@ -206,6 +210,7 @@ const PRO_TEAM_WHITELIST = new Set([
   'BOOM Esports',
   'Team Nemesis'
 ]);
+const PRO_HERO_CONCURRENCY = 5;
 const FANTASY_ROLES = {
   1: 'Core',
   2: 'Support'
@@ -258,6 +263,7 @@ const HEROES = {};
 const PLAYER_MAP = new Map();
 const SIMILAR_CACHE = new Map();
 const PRO_CACHE = { rosterPromise: null, heroMap: new Map() };
+let activeSimilarJob = null;
 const statusLogEl = document.getElementById('statusLog');
 const statusPanel = statusLogEl?.closest('.status-panel') || null;
 
@@ -414,44 +420,112 @@ const fmtHeroWinRate = (win, games) => {
   return `${Math.round((win || 0) / games * 100)}% win`; 
 };
 
-async function findSimilarPro(playerId) {
+const abortError = () => {
+  const err = new Error('Comparison aborted');
+  err.name = 'AbortError';
+  return err;
+};
+
+async function findSimilarPro(playerId, onProgress, options = {}) {
+  const { signal } = options || {};
+  const progress = typeof onProgress === 'function' ? onProgress : () => {};
+  const notify = (stage, message) => {
+    if (signal?.aborted) return;
+    progress(stage, message);
+  };
+  if (signal?.aborted) {
+    throw abortError();
+  }
   if (SIMILAR_CACHE.has(playerId)) {
-    return SIMILAR_CACHE.get(playerId);
+    const cached = SIMILAR_CACHE.get(playerId);
+    if (cached && typeof cached.then === 'function') {
+      notify('cache', 'Reusing in-flight comparison…');
+      return cached;
+    }
+    notify('cache', 'Loaded previous comparison instantly.');
+    return cached;
   }
   const promise = (async () => {
+    if (signal?.aborted) {
+      throw abortError();
+    }
     const player = PLAYER_MAP.get(playerId);
     if (!player) {
+      notify('error', 'Player data missing. Please refresh and try again.');
       return null;
     }
+    notify('player', 'Analyzing your most played heroes…');
     const playerTop = getTopHeroes(player.allHeroes, 6);
     if (playerTop.length === 0) {
+      notify('player', 'No hero history available for this player yet.');
       return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
     }
+    notify('roster', `Fetching pro rosters from ${PRO_TEAM_WHITELIST.size} teams…`);
     const roster = await fetchProRoster();
     if (!roster.length) {
+      notify('roster', 'Unable to load tracked pro player data right now.');
       return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
     }
+    notify('evaluate', `Comparing against ${roster.length} pros (up to ${PRO_HERO_CONCURRENCY} at a time)…`);
+    const total = roster.length;
+    const limit = Math.min(PRO_HERO_CONCURRENCY, total) || 1;
+    let index = 0;
+    let processed = 0;
     let best = null;
-    for (const pro of roster) {
-      const heroList = await fetchProHeroStats(pro.account_id);
-      if (!heroList.length) continue;
-      const proTop = getTopHeroes(heroList, 10);
-      const overlap = computeSharedHeroes(playerTop, proTop);
-      if (!overlap.score) continue;
-      if (!best || overlap.score > best.overlap.score ||
-        (overlap.score === best.overlap.score && overlap.weight > best.overlap.weight)) {
-        best = { pro, overlap, proTop };
+    notify('progress', `Compared 0/${total} pros…`);
+
+    async function worker() {
+      while (true) {
+        if (signal?.aborted) {
+          throw abortError();
+        }
+        const current = index++;
+        if (current >= total) {
+          break;
+        }
+        const pro = roster[current];
+        const heroList = await fetchProHeroStats(pro.account_id);
+        if (signal?.aborted) {
+          throw abortError();
+        }
+        if (heroList.length) {
+          const proTop = getTopHeroes(heroList, 10);
+          if (proTop.length) {
+            const overlap = computeSharedHeroes(playerTop, proTop);
+            if (overlap.score && (!best || overlap.score > best.overlap.score ||
+              (overlap.score === best.overlap.score && overlap.weight > best.overlap.weight))) {
+              best = { pro, overlap, proTop };
+            }
+          }
+        }
+        processed += 1;
+        notify('progress', `Compared ${processed}/${total} pros…`);
       }
     }
+
+    await Promise.all(Array.from({ length: limit }, () => worker()));
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    notify('done', 'Finished evaluating hero overlaps.');
+
     if (!best) {
       return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
     }
     return { pro: best.pro, overlap: best.overlap, playerTop, proTop: best.proTop };
   })();
   SIMILAR_CACHE.set(playerId, promise);
-  const resolved = await promise;
-  SIMILAR_CACHE.set(playerId, resolved);
-  return resolved;
+  try {
+    const resolved = await promise;
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    SIMILAR_CACHE.set(playerId, resolved);
+    return resolved;
+  } catch (err) {
+    SIMILAR_CACHE.delete(playerId);
+    throw err;
+  }
 }
 
 function renderSimilarModal(playerId, result) {
@@ -521,17 +595,82 @@ function renderSimilarModal(playerId, result) {
   };
 }
 
+function createModalProgressHandler() {
+  const summary = document.getElementById('similarSummary');
+  const log = document.getElementById('similarSteps');
+  const rows = new Map();
+  return (stage, message) => {
+    if (!message) return;
+    if (summary) {
+      summary.textContent = message;
+    }
+    if (!log) return;
+    const key = stage || `stage-${rows.size}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'modal-progress-row';
+      log.appendChild(row);
+      rows.set(key, row);
+    }
+    row.textContent = message;
+  };
+}
+
 async function showSimilarPro(playerId) {
   const player = PLAYER_MAP.get(playerId);
   const persona = player?.profile?.profile?.personaname || `Player ${playerId}`;
-  openModal(`Finding similar pro for ${persona}…`, '<div class="modal-section"><div class="spinner"></div></div>');
+  if (activeSimilarJob?.controller) {
+    activeSimilarJob.controller.abort();
+  }
+  const controller = new AbortController();
+  activeSimilarJob = { playerId, controller };
+  openModal(
+    `Finding similar pro for ${persona}…`,
+    `
+      <div class="modal-section modal-progress">
+        <div class="modal-progress-header">
+          <div id="similarSpinner" class="spinner"></div>
+          <div id="similarSummary" class="small">Preparing comparison…</div>
+        </div>
+        <div id="similarSteps" class="modal-progress-log"></div>
+      </div>
+    `
+  );
+  const updateProgress = createModalProgressHandler();
+  updateProgress('start', 'Preparing comparison…');
   try {
-    const result = await findSimilarPro(playerId);
+    const result = await findSimilarPro(playerId, (stage, message) => {
+      updateProgress(stage, message);
+    }, { signal: controller.signal });
+    if (controller.signal.aborted || activeSimilarJob?.controller !== controller) {
+      return;
+    }
+    const spinner = document.getElementById('similarSpinner');
+    if (spinner) {
+      spinner.remove();
+    }
+    updateProgress('done', 'Assembling comparison…');
+    if (controller.signal.aborted || activeSimilarJob?.controller !== controller) {
+      return;
+    }
     const modalContent = renderSimilarModal(playerId, result);
     openModal(modalContent.title, modalContent.body);
   } catch (e) {
+    if (controller.signal.aborted || activeSimilarJob?.controller !== controller || e?.name === 'AbortError') {
+      return;
+    }
     console.warn('showSimilarPro failed', playerId, e);
+    updateProgress('error', 'Failed to complete the comparison.');
+    const spinner = document.getElementById('similarSpinner');
+    if (spinner) {
+      spinner.remove();
+    }
     openModal(`Similar pro for ${persona}`, '<p class="small">Something went wrong while searching for a comparable pro player. Please try again later.</p>');
+  } finally {
+    if (activeSimilarJob?.controller === controller) {
+      activeSimilarJob = null;
+    }
   }
 }
 
