@@ -49,8 +49,9 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .spinner { width: 22px; height: 22px; border: 3px solid #233048; border-top-color: #9aa6bd; border-radius: 50%; animation: spin 1s linear infinite; }
 .spinner.tiny { width: 14px; height: 14px; border-width: 2px; }
 
-.grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-@media (min-width: 980px) { .grid { grid-template-columns: 360px 1fr; } }
+.grid { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+@media (min-width: 980px) { .grid { grid-template-columns: 340px minmax(0, 1fr); } }
+@media (min-width: 1280px) { .grid { grid-template-columns: 340px minmax(0, 1fr) 280px; } }
 .card { background: var(--card); border: 1px solid #1f2937; border-radius: 18px; padding: 16px; overflow: hidden; }
 
 /* Facts */
@@ -112,6 +113,20 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .kda-chip.assists .value { color: #38bdf8; }
 .player-extra { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .metric-chip { padding: 4px 8px; border-radius: 999px; background: #111827; border: 1px solid #1f2937; font-size: 11px; color: var(--muted); letter-spacing: .04em; font-weight: 600; }
+
+.muted-text { color: var(--muted); }
+
+.meta-side-card { display: flex; flex-direction: column; gap: 12px; }
+.meta-side-summary { font-size: 12px; color: var(--muted); }
+.meta-side-list { display: flex; flex-direction: column; gap: 10px; }
+.meta-side-item { display: flex; align-items: center; gap: 10px; background: #0c1422; border: 1px solid #1f2937; border-radius: 14px; padding: 10px; }
+.meta-side-rank { width: 26px; text-align: center; font-weight: 700; color: var(--muted); }
+.meta-side-item img { width: 46px; height: 26px; border-radius: 10px; object-fit: cover; box-shadow: 0 4px 10px rgba(0, 0, 0, .25); }
+.meta-side-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.meta-side-hero { font-weight: 600; font-size: 13px; color: var(--text); }
+.meta-side-stats { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.meta-side-win { color: var(--good); font-weight: 600; }
+.meta-side-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 10px; background: #0c1422; border: 1px dashed #1f2937; border-radius: 14px; }
 
 @media (max-width: 680px) {
   .player-entry { grid-template-columns: 1fr; }
@@ -180,6 +195,13 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
         <h3>Match Feed</h3>
         <div id="feed" class="feed"></div>
       </main>
+      <aside class="card meta-side-card">
+        <h3>Pro Meta (7 Days)</h3>
+        <div id="metaSummary" class="meta-side-summary muted-text"></div>
+        <div id="metaList" class="meta-side-list">
+          <div class="meta-side-empty">Loading pro meta…</div>
+        </div>
+      </aside>
     </div>
   </div>
 
@@ -204,6 +226,9 @@ const RATE_DELAY_OK = 300;
 const RATE_DELAY_429 = 1500;
 const META_TRENDS_MAX_AGE = 1000 * 60 * 60; // 1 hour cache for weekly pro meta data
 const META_TOP_LIMIT = 20;
+const META_MATCH_SAMPLE_LIMIT = 75;
+const META_DETAIL_CONCURRENCY = 4;
+const META_LOOKBACK_SECONDS = 60 * 60 * 24 * 7;
 const PRO_TEAM_WHITELIST = new Set([
   'Team Falcons',
   'Xtreme Gaming',
@@ -330,11 +355,20 @@ const API = {
       retryDelay: RATE_DELAY_OK * 2
     });
     return Array.isArray(data) ? data : [];
+  },
+  proMatches: async () => {
+    const data = await fetchJson('https://api.opendota.com/api/proMatches', {
+      scheduler: scheduleProRequest,
+      retries: 4,
+      retryDelay: RATE_DELAY_OK * 2
+    });
+    return Array.isArray(data) ? data : [];
   }
 };
 
 /* ---------- Helpers ---------- */
 const HEROES = {};
+let heroDefinitionsPromise = null;
 const PLAYER_MAP = new Map();
 const SIMILAR_CACHE = new Map();
 const META_CACHE = new Map();
@@ -344,6 +378,8 @@ let activeSimilarJob = null;
 let activeMetaJob = null;
 const statusLogEl = document.getElementById('statusLog');
 const statusPanel = statusLogEl?.closest('.status-panel') || null;
+const metaSummaryEl = document.getElementById('metaSummary');
+const metaListEl = document.getElementById('metaList');
 
 function resetStatus() {
   if (statusLogEl) {
@@ -395,6 +431,88 @@ function statusStep(message) {
       row.appendChild(msg);
     }
   };
+}
+
+function showMetaPanelLoading() {
+  if (metaSummaryEl) {
+    metaSummaryEl.textContent = 'Gathering contested heroes from recent pro matches…';
+  }
+  if (metaListEl) {
+    metaListEl.innerHTML = `
+      <div class="meta-side-empty">
+        <div class="spinner tiny" style="margin: 0 auto 6px;"></div>
+        Loading pro meta…
+      </div>
+    `;
+  }
+}
+
+function showMetaPanelError(message) {
+  if (metaSummaryEl) {
+    metaSummaryEl.textContent = message || 'Unable to load pro meta.';
+  }
+  if (metaListEl) {
+    metaListEl.innerHTML = '<div class="meta-side-empty">Pro meta data is unavailable right now.</div>';
+  }
+}
+
+function renderMetaPanel(data) {
+  if (!metaListEl) {
+    return;
+  }
+  const list = Array.isArray(data?.list) ? data.list : [];
+  if (!list.length) {
+    showMetaPanelError('No recent pro draft data available.');
+    return;
+  }
+  const matchSample = data?.matchSample || 0;
+  const summaryBits = [];
+  if (matchSample) {
+    summaryBits.push(`${fmtNumber(matchSample)} pro matches sampled`);
+  }
+  summaryBits.push('last 7 days');
+  if (metaSummaryEl) {
+    metaSummaryEl.textContent = summaryBits.join(' • ');
+  }
+  const markup = list.map((entry, index) => {
+    const heroId = entry?.id;
+    const heroLabel = heroName(heroId);
+    const contested = entry?.contested ?? entry?.presence ?? ((entry?.pro_pick || 0) + (entry?.pro_ban || 0));
+    const picks = entry?.pro_pick || 0;
+    const bans = entry?.pro_ban || 0;
+    const wins = entry?.pro_win || 0;
+    const winRate = picks ? fmtPct(wins / picks) : '—';
+    const share = typeof entry?.presencePct === 'number' ? fmtPct(entry.presencePct) : '';
+    const contestedLine = share ? `Contested: ${fmtNumber(contested)} • ${share} of sample` : `Contested: ${fmtNumber(contested)}`;
+    const pickLine = `Picks: ${fmtNumber(picks)} • Bans: ${fmtNumber(bans)}`;
+    const winDisplay = picks ? `<span class="meta-side-win">${winRate} win rate when picked</span>` : 'No picks recorded yet';
+    const rank = entry?.rank || (index + 1);
+    return `
+      <div class="meta-side-item">
+        <div class="meta-side-rank">#${rank}</div>
+        <img src="${heroImg(heroId)}" alt="${heroLabel}">
+        <div class="meta-side-body">
+          <div class="meta-side-hero">${heroLabel}</div>
+          <div class="meta-side-stats">${contestedLine}<br>${pickLine}<br>${winDisplay}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+  metaListEl.innerHTML = markup;
+}
+
+async function updateMetaPanel() {
+  if (!metaListEl) {
+    return;
+  }
+  showMetaPanelLoading();
+  try {
+    const data = await getWeeklyProMetaTrends();
+    renderMetaPanel(data);
+  } catch (err) {
+    console.warn('metaPanel failed', err);
+    showMetaPanelError('Unable to load pro meta.');
+  }
 }
 
 const fmtPct = n => ((n || 0) * 100).toFixed(1) + '%';
@@ -498,6 +616,35 @@ async function fetchProHeroStats(accountId) {
   }
 }
 
+async function ensureHeroDefinitions() {
+  if (Object.keys(HEROES).length) {
+    return HEROES;
+  }
+  if (!heroDefinitionsPromise) {
+    heroDefinitionsPromise = (async () => {
+      const list = await API.heroes();
+      if (Array.isArray(list)) {
+        list.forEach(hero => {
+          const id = Number(hero?.id);
+          if (Number.isFinite(id)) {
+            HEROES[id] = hero;
+          }
+        });
+      }
+      return HEROES;
+    })().catch(err => {
+      heroDefinitionsPromise = null;
+      throw err;
+    });
+  }
+  try {
+    return await heroDefinitionsPromise;
+  } catch (err) {
+    console.warn('ensureHeroDefinitions failed', err);
+    return HEROES;
+  }
+}
+
 async function getWeeklyProMetaTrends(signal) {
   if (signal?.aborted) {
     throw abortError();
@@ -508,49 +655,111 @@ async function getWeeklyProMetaTrends(signal) {
     return cached;
   }
   if (!META_TRENDS.promise) {
-    const url = new URL('https://api.opendota.com/api/heroStats');
-    url.searchParams.set('is_pro', '1');
-    url.searchParams.set('date', '7');
-    url.searchParams.set('game_mode', '2');
     META_TRENDS.promise = (async () => {
-      const list = await fetchJson(url.toString(), {
-        retries: 3,
-        retryDelay: RATE_DELAY_OK * 2
-      });
-      const heroes = Array.isArray(list) ? list : [];
-      const enriched = heroes
-        .map(entry => {
-          const id = Number(entry.id ?? entry.hero_id);
-          if (!Number.isFinite(id)) return null;
-          const proPick = Number(entry.pro_pick) || 0;
-          const proBan = Number(entry.pro_ban) || 0;
-          const proWin = Number(entry.pro_win) || 0;
-          const presence = proPick + proBan;
-          if (presence <= 0) return null;
-          return { id, pro_pick: proPick, pro_ban: proBan, pro_win: proWin, presence };
-        })
-        .filter(Boolean)
-        .sort((a, b) => (b.presence || 0) - (a.presence || 0));
-      const top = enriched.slice(0, META_TOP_LIMIT);
-      const totalPresence = enriched.reduce((sum, hero) => sum + (hero.presence || 0), 0);
-      const map = new Map();
-      const listPayload = top.map((hero, index) => {
+      await ensureHeroDefinitions();
+      let proMatches = [];
+      try {
+        proMatches = await API.proMatches();
+      } catch (err) {
+        console.warn('proMatches failed', err);
+        proMatches = [];
+      }
+      const cutoff = Math.floor(Date.now() / 1000) - META_LOOKBACK_SECONDS;
+      const filtered = proMatches
+        .filter(match => (match?.start_time || 0) >= cutoff)
+        .slice(0, META_MATCH_SAMPLE_LIMIT);
+      const totals = new Map();
+      let pointer = 0;
+      let matchesWithDraft = 0;
+      const limit = Math.min(META_DETAIL_CONCURRENCY, filtered.length || 0) || 1;
+
+      const ensureEntry = id => {
+        let entry = totals.get(id);
+        if (!entry) {
+          entry = { id, pro_pick: 0, pro_ban: 0, pro_win: 0, contested: 0 };
+          totals.set(id, entry);
+        }
+        return entry;
+      };
+
+      async function worker() {
+        while (true) {
+          const index = pointer++;
+          if (index >= filtered.length) {
+            break;
+          }
+          const match = filtered[index];
+          const matchId = match?.match_id;
+          if (!matchId) {
+            continue;
+          }
+          try {
+            const detail = await fetchJson(`https://api.opendota.com/api/matches/${matchId}`, {
+              scheduler: scheduleProRequest,
+              retries: 4,
+              retryDelay: RATE_DELAY_OK * 2
+            });
+            const draft = Array.isArray(detail?.picks_bans) ? detail.picks_bans : [];
+            if (!draft.length) {
+              continue;
+            }
+            matchesWithDraft += 1;
+            const radiantWin = Boolean(detail?.radiant_win);
+            for (const pb of draft) {
+              if (!pb) continue;
+              const heroId = Number(pb.hero_id);
+              if (!Number.isFinite(heroId) || heroId <= 0) continue;
+              const entry = ensureEntry(heroId);
+              if (pb.is_pick) {
+                entry.pro_pick += 1;
+                entry.contested += 1;
+                const pickTeam = Number(pb.team);
+                const won = (pickTeam === 0 && radiantWin) || (pickTeam === 1 && !radiantWin);
+                if (won) {
+                  entry.pro_win += 1;
+                }
+              } else {
+                entry.pro_ban += 1;
+                entry.contested += 1;
+              }
+            }
+          } catch (err) {
+            console.warn('pro match detail failed', matchId, err);
+          }
+        }
+      }
+
+      await Promise.all(Array.from({ length: limit }, () => worker()));
+
+      const aggregated = [...totals.values()]
+        .filter(hero => (hero.contested || 0) > 0)
+        .sort((a, b) => {
+          const contestDiff = (b.contested || 0) - (a.contested || 0);
+          if (contestDiff) return contestDiff;
+          return (b.pro_pick || 0) - (a.pro_pick || 0);
+        });
+      const totalContested = aggregated.reduce((sum, hero) => sum + (hero.contested || 0), 0);
+      const top = aggregated.slice(0, META_TOP_LIMIT).map((hero, index) => {
+        const presence = hero.contested || 0;
         const payload = {
           id: hero.id,
-          pro_pick: hero.pro_pick,
-          pro_ban: hero.pro_ban,
-          pro_win: hero.pro_win,
-          presence: hero.presence,
-          presencePct: totalPresence ? hero.presence / totalPresence : 0,
+          pro_pick: hero.pro_pick || 0,
+          pro_ban: hero.pro_ban || 0,
+          pro_win: hero.pro_win || 0,
+          contested: presence,
+          presence: presence,
+          presencePct: totalContested ? presence / totalContested : 0,
           rank: index + 1
         };
-        map.set(hero.id, payload);
         return payload;
       });
+      const map = new Map(top.map(hero => [hero.id, hero]));
       const data = {
-        list: listPayload,
+        list: top,
         map,
-        totalPresence,
+        totalContested,
+        matchSample: filtered.length,
+        matchesWithDraft,
         fetchedAt: Date.now()
       };
       META_TRENDS.data = data;
@@ -578,7 +787,7 @@ async function getWeeklyProMetaTrends(signal) {
     }
     return META_TRENDS.data;
   }
-  return { list: [], map: new Map(), totalPresence: 0, fetchedAt: Date.now() };
+  return { list: [], map: new Map(), totalContested: 0, matchSample: 0, matchesWithDraft: 0, fetchedAt: Date.now() };
 }
 
 function normalizeHeroSample(entry) {
@@ -869,17 +1078,26 @@ async function findMetaRecommendations(playerId, onProgress, options = {}) {
     try {
       proMeta = await getWeeklyProMetaTrends(signal);
       const poolSize = proMeta?.list?.length || 0;
-      notify('metaFetch', `Loaded weekly pro draft trends (top ${poolSize} heroes).`);
+      const matchSample = proMeta?.matchSample || 0;
+      if (matchSample && poolSize) {
+        notify('metaFetch', `Analyzed ${fmtNumber(matchSample)} pro matches (top ${poolSize} contested heroes).`);
+      } else if (poolSize) {
+        notify('metaFetch', `Loaded contested heroes from recent pro drafts (top ${poolSize}).`);
+      } else {
+        notify('metaFetch', 'Pro draft data returned without contested heroes.');
+      }
     } catch (err) {
       console.warn('weeklyProMeta failed', err);
       notify('metaFetch', 'Unable to load pro draft data right now.');
-      proMeta = { list: [], map: new Map(), totalPresence: 0, fetchedAt: Date.now() };
+      proMeta = { list: [], map: new Map(), totalContested: 0, matchSample: 0, matchesWithDraft: 0, fetchedAt: Date.now() };
     }
     notify('metaCompare', 'Comparing your favourites against the pro meta…');
     const metaMap = proMeta?.map instanceof Map ? proMeta.map : new Map();
     const metaContext = {
       topCount: metaMap.size,
-      totalPresence: proMeta?.totalPresence || 0,
+      totalContested: proMeta?.totalContested || 0,
+      matchSample: proMeta?.matchSample || 0,
+      matchesWithDraft: proMeta?.matchesWithDraft || 0,
       fetchedAt: proMeta?.fetchedAt || Date.now()
     };
     const decorated = playerTopRaw.map(sample => {
@@ -892,6 +1110,8 @@ async function findMetaRecommendations(playerId, onProgress, options = {}) {
       const proBan = trend?.pro_ban || 0;
       const proWin = trend?.pro_win || 0;
       const proWinRate = proPick ? proWin / proPick : 0;
+      const contested = trend?.contested ?? trend?.presence ?? (proPick + proBan);
+      const presencePct = typeof trend?.presencePct === 'number' ? trend.presencePct : 0;
       return {
         heroId,
         heroName: heroName(heroId),
@@ -901,8 +1121,8 @@ async function findMetaRecommendations(playerId, onProgress, options = {}) {
         playerWinRate,
         inMeta: Boolean(trend),
         metaRank: trend?.rank ?? null,
-        metaPresence: trend?.presence || 0,
-        metaPresencePct: trend?.presencePct || 0,
+        metaPresence: contested || 0,
+        metaPresencePct: presencePct,
         proPick,
         proBan,
         proWin,
@@ -987,7 +1207,15 @@ function renderMetaModal(playerId, result) {
     const ctx = result.metaContext;
     if (!ctx) return '';
     if (ctx.topCount) {
-      return `<span class="small">Data source: last 7 days of professional Captains Mode drafts (top ${ctx.topCount} heroes ranked by combined picks + bans).</span>`;
+      const sampleBits = [];
+      if (ctx.matchSample) {
+        sampleBits.push(`${fmtNumber(ctx.matchSample)} matches`);
+      }
+      if (ctx.matchesWithDraft && ctx.matchesWithDraft !== ctx.matchSample) {
+        sampleBits.push(`${fmtNumber(ctx.matchesWithDraft)} with drafts`);
+      }
+      const sampleText = sampleBits.length ? ` (${sampleBits.join(' • ')})` : '';
+      return `<span class="small">Data source: last 7 days of professional Captains Mode drafts — top ${ctx.topCount} contested heroes${sampleText}.</span>`;
     }
     return '<span class="small">Professional meta data was unavailable during this check.</span>';
   })();
@@ -1327,6 +1555,8 @@ async function bootstrap() {
     console.warn('heroStats failed', e);
     heroStep.update('error', 'Failed to load hero stats (continuing without updates).');
   }
+
+  updateMetaPanel();
 
   const players = [];
   PLAYER_MAP.clear();
