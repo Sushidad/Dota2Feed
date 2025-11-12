@@ -181,7 +181,18 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
     <div class="grid">
       <aside class="card">
         <h3>Interesting Facts & Comparisons</h3>
-        <div id="facts" class="facts"></div>
+        <div id="facts" class="facts">
+          <div id="factsPlayers" class="facts"></div>
+          <div id="proMetaCard" class="fact-card meta-card">
+            <div class="fact-head">
+              <div>
+                <div class="meta-title">Tracked Pro Meta</div>
+                <div class="small">Cached snapshot updates every 48 hours.</div>
+              </div>
+            </div>
+            <div class="meta-message">Waiting for player data before fetching pro meta…</div>
+          </div>
+        </div>
       </aside>
       <main class="card">
         <h3>Match Feed</h3>
@@ -207,7 +218,7 @@ const IDS = [39984287, 50423134, 53635813, 86890516, 26467713, 81305221, 2708107
 const VALID_GAME_MODES = [1, 2, 3, 4, 22];
 const VALID_LOBBY_TYPES = [0, 7];
 const MAX_DETAILED_MATCHES = 15;
-const RATE_DELAY_OK = 300;
+const RATE_DELAY_OK = 260;
 const RATE_DELAY_429 = 1500;
 const PRO_TEAM_WHITELIST = new Set([
   'Team Falcons',
@@ -235,7 +246,7 @@ const FANTASY_ROLES = {
   2: 'Support'
 };
 
-const PLAYER_CONCURRENCY = 3;
+const PLAYER_CONCURRENCY = 4;
 const PLAYER_CACHE_SOFT_TTL = 1000 * 60 * 5; // 5 minutes
 const PLAYER_CACHE_MAX_AGE = 1000 * 60 * 60 * 2; // 2 hours
 
@@ -260,8 +271,8 @@ function createThrottle(interval) {
   };
 }
 
-const scheduleApiRequest = createThrottle(120);
-const scheduleProRequest = createThrottle(320);
+const scheduleApiRequest = createThrottle(90);
+const scheduleProRequest = createThrottle(280);
 
 const PRO_CACHE_MAX_AGE = 1000 * 60 * 60 * 48;
 const STORAGE_KEYS = {
@@ -1041,9 +1052,8 @@ async function showSimilarPro(playerId) {
 
 /* ---------- Render Facts ---------- */
 function renderFacts(players) {
-  const facts = document.getElementById('facts');
-  if (!facts) return;
-  facts.innerHTML = '';
+  const factsList = document.getElementById('factsPlayers');
+  if (!factsList) return;
   const stats = players.map(p => {
     const data = aggregateFacts(filterRealGames(p.matches), p.recent28);
     return { ...data, player: p };
@@ -1094,18 +1104,8 @@ function renderFacts(players) {
         </div>
       </div>`;
   }).join('');
-  const metaPlaceholder = `
-    <div id="${PRO_META_CARD_ID}" class="fact-card meta-card">
-      <div class="fact-head">
-        <div>
-          <div class="meta-title">Tracked Pro Meta</div>
-          <div class="small">Cached snapshot updates every 48 hours.</div>
-        </div>
-      </div>
-      <div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading tracked pro hero pools…</span></div>
-    </div>`;
-  facts.innerHTML = markup + metaPlaceholder;
-  const buttons = facts.querySelectorAll('button[data-similar]');
+  factsList.innerHTML = markup;
+  const buttons = factsList.querySelectorAll('button[data-similar]');
   buttons.forEach(btn => {
     btn.addEventListener('click', () => {
       const playerId = Number(btn.getAttribute('data-similar'));
@@ -1113,7 +1113,6 @@ function renderFacts(players) {
       showSimilarPro(playerId);
     });
   });
-  loadProMetaPanel();
 }
 
 /* ---------- Render Feed ---------- */
@@ -1258,9 +1257,36 @@ async function loadProMetaPanel() {
   const container = document.getElementById(PRO_META_CARD_ID);
   if (!container) return;
   const runId = ++proMetaRunCounter;
+  const cachedRoster = (() => {
+    try {
+      const cached = readCache(STORAGE_KEYS.roster, PRO_CACHE_MAX_AGE);
+      if (cached && Array.isArray(cached.value) && cached.value.length) {
+        return { value: cached.value, timestamp: cached.timestamp };
+      }
+    } catch (err) {
+      console.warn('Failed to inspect cached pro roster', err);
+    }
+    return null;
+  })();
+  if (!cachedRoster && !playersLoaded) {
+    renderProMetaCard(runId, {
+      subtitle: 'Waiting for player data…',
+      body: '<div class="meta-message">Player info is loading. Pro meta will refresh once that finishes.</div>',
+      footer: 'Cached for up to 48h'
+    });
+    await ensurePlayersReady();
+    if (runId !== proMetaRunCounter) {
+      return;
+    }
+  }
+  const spinnerFooter = cachedRoster?.timestamp
+    ? `Cached snapshot ${fmtRelativeTime(cachedRoster.timestamp)}`
+    : 'Cached for up to 48h';
   renderProMetaCard(runId, {
-    subtitle: 'Loading tracked pro hero pools…',
-    body: '<div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading tracked pro hero pools…</span></div>'
+    subtitle: cachedRoster ? 'Loading cached pro hero pools…' : 'Loading tracked pro hero pools…',
+    body: '<div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading tracked pro hero pools…</span></div>',
+    footer: spinnerFooter,
+    footerTitle: cachedRoster?.timestamp ? `Cached snapshot ${new Date(cachedRoster.timestamp).toLocaleString()}` : ''
   });
   try {
     const roster = await fetchProRoster();
@@ -1397,9 +1423,12 @@ async function bootstrap() {
   resetStatus();
   const startStep = statusStep('Starting refresh…');
   const feedEl = document.getElementById('feed');
-  const factsEl = document.getElementById('facts');
+  const factsListEl = document.getElementById('factsPlayers');
   if (feedEl) { feedEl.innerHTML = '<div class="post-header"><div class="spinner"></div><span class="small"> Loading…</span></div>'; }
-  if (factsEl) { factsEl.innerHTML = '<div class="post-header"><div class="spinner"></div><span class="small"> Loading…</span></div>'; }
+  if (factsListEl) {
+    factsListEl.innerHTML = '<div class="fact-card"><div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading player highlights…</span></div></div>';
+  }
+  loadProMetaPanel();
   startStep.update('success', 'Refresh started.');
 
   try {
@@ -1501,7 +1530,7 @@ async function bootstrap() {
     if (players.length === 0) {
       const failStep = statusStep('Finalizing…');
       failStep.update('error', 'Unable to load any player data from OpenDota.');
-      if (factsEl) { factsEl.innerHTML = '<div class="note">Failed to load any player data.</div>'; }
+      if (factsListEl) { factsListEl.innerHTML = '<div class="note">Failed to load any player data.</div>'; }
       if (feedEl) { feedEl.innerHTML = '<div class="note">Failed to load feed.</div>'; }
       return;
     }
