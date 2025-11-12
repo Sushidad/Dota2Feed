@@ -642,6 +642,12 @@ function aggregateFacts(matches, recent28) {
   const kda = (kills + assists) / Math.max(1, deaths);
   const gpm = matches.reduce((a, m) => a + (m.gold_per_min || 0), 0) / safeTotal;
   const xpm = matches.reduce((a, m) => a + (m.xp_per_min || 0), 0) / safeTotal;
+  const pingSamples = matches
+    .map(m => Number(m.pings))
+    .filter(value => Number.isFinite(value) && value >= 0);
+  const avgPings = pingSamples.length
+    ? pingSamples.reduce((sum, value) => sum + value, 0) / pingSamples.length
+    : null;
   const hCount = new Map();
   matches.forEach(m => hCount.set(m.hero_id, (hCount.get(m.hero_id) || 0) + 1));
   const heroOrder = [...hCount.entries()].sort((a, b) => b[1] - a[1]);
@@ -649,7 +655,7 @@ function aggregateFacts(matches, recent28) {
   const unique = hCount.size;
   const recentCount = filterRealGames(recent28).length;
   const winRate = total ? wins / total : 0;
-  return { wins, total, kda, gpm, xpm, topHeroes, unique, recentCount, winRate };
+  return { wins, total, kda, gpm, xpm, avgPings, topHeroes, unique, recentCount, winRate };
 }
 
 async function fetchProRoster() {
@@ -1152,6 +1158,7 @@ function renderFacts(players) {
     const persona = p.profile.profile?.personaname || 'Unknown';
     const total = stat.total;
     const losses = Math.max(0, total - stat.wins);
+    const avgPing = stat.avgPings != null ? Math.round(stat.avgPings) : '—';
     const heroTags = stat.topHeroes.length
       ? stat.topHeroes.map(h => `<span class="hero-tag" title="${heroName(h.id)}"><img src="${heroImg(h.id)}" alt="${heroName(h.id)}"><span>${h.count}</span></span>`).join('')
       : '<span class="small">No games</span>';
@@ -1168,6 +1175,7 @@ function renderFacts(players) {
           <div class="fact-item ${isBest(stat, 'kda') ? 'best' : ''}"><small>KDA</small><b>${stat.kda.toFixed(1)}</b></div>
           <div class="fact-item ${isBest(stat, 'gpm') ? 'best' : ''}"><small>GPM</small><b>${stat.gpm.toFixed(0)}</b></div>
           <div class="fact-item ${isBest(stat, 'xpm') ? 'best' : ''}"><small>XPM</small><b>${stat.xpm.toFixed(0)}</b></div>
+          <div class="fact-item"><small>Avg Pings</small><b>${avgPing}</b></div>
           <div class="fact-item ${isBest(stat, 'unique') ? 'best' : ''}"><small>Unique Heroes</small><b>${stat.unique}</b></div>
           <div class="fact-item ${isBest(stat, 'recentCount') ? 'best' : ''}"><small>Games (28d)</small><b>${stat.recentCount}</b></div>
           <div class="fact-item"><small>Top Heroes</small><div class="hero-pair">${heroTags}</div></div>
