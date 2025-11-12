@@ -4,7 +4,7 @@
  * - Uses Node 18+ native fetch (no deps)
  * - Mirrors your frontend’s logic: profiles, recent matches, recent28, heroStats
  * - Computes the same “facts” your UI shows so render is instant
- * - Builds a pro meta snapshot (top contested heroes) from heroStats
+ * - Builds an Immortal meta snapshot (top high-MMR picks) from heroStats
  * - Skips a player cleanly if OpenDota returns 404/empty
  */
 
@@ -15,6 +15,7 @@ const path = require("path");
 const IDS = [39984287, 50423134, 53635813, 86890516, 26467713, 81305221, 27081071];
 const VALID_GAME_MODES = [1, 2, 3, 4, 22];
 const VALID_LOBBY_TYPES = [0, 7];
+const IMMORTAL_HIGHLIGHT_MIN_MATCHES = 200;
 
 // throttle / retry similar to your page
 const RATE_DELAY_OK = 260;
@@ -158,27 +159,26 @@ function buildProMetaSnapshot(heroStats) {
   const heroes = (heroStats || [])
     .map((h) => {
       const id = Number(h.id);
-      const pro_pick = Number(h.pro_pick) || 0;
-      const pro_ban = Number(h.pro_ban) || 0;
-      const pro_win = Number(h.pro_win) || 0;
-      const contested = pro_pick + pro_ban;
-      if (!Number.isFinite(id) || contested <= 0) return null;
-      return { hero_id: id, contested, pro_pick, pro_ban, pro_win };
+      const immortal_pick = Number(h["8_pick"]) || 0;
+      const immortal_win = Number(h["8_win"]) || 0;
+      if (!Number.isFinite(id) || immortal_pick <= 0) return null;
+      return { hero_id: id, immortal_pick, immortal_win, source: "immortal" };
     })
     .filter(Boolean)
-    .sort((a, b) => (b.contested || 0) - (a.contested || 0))
+    .sort((a, b) => (b.immortal_pick || 0) - (a.immortal_pick || 0))
     .slice(0, 30);
 
-  const contestedTotal = heroes.reduce((s, x) => s + x.contested, 0);
-  const pickTotal = heroes.reduce((s, x) => s + x.pro_pick, 0);
-  const banTotal = heroes.reduce((s, x) => s + x.pro_ban, 0);
+  const pickTotal = heroes.reduce((s, x) => s + (x.immortal_pick || 0), 0);
+  const winTotal = heroes.reduce((s, x) => s + (x.immortal_win || 0), 0);
 
-  // highlight: most successful among reasonably picked heroes (>=15 picks) else top contested
   const highlight =
     heroes
-      .filter((x) => (x.pro_pick || 0) >= 15)
-      .sort((a, b) => (b.pro_pick ? b.pro_win / b.pro_pick : 0) - (a.pro_pick ? a.pro_win / a.pro_pick : 0))[0] ||
-    heroes.find((x) => (x.pro_pick || 0) > 0) ||
+      .filter((x) => (x.immortal_pick || 0) >= IMMORTAL_HIGHLIGHT_MIN_MATCHES)
+      .sort((a, b) =>
+        (b.immortal_pick ? (b.immortal_win || 0) / b.immortal_pick : 0) -
+        (a.immortal_pick ? (a.immortal_win || 0) / a.immortal_pick : 0)
+      )[0] ||
+    heroes.find((x) => (x.immortal_pick || 0) > 0) ||
     null;
 
   return {
@@ -187,12 +187,15 @@ function buildProMetaSnapshot(heroStats) {
     highlight: highlight
       ? {
           hero_id: highlight.hero_id,
-          pro_pick: highlight.pro_pick,
-          pro_win: highlight.pro_win,
-          winRate: highlight.pro_pick ? highlight.pro_win / highlight.pro_pick : 0
+          immortal_pick: highlight.immortal_pick,
+          immortal_win: highlight.immortal_win,
+          winRate: highlight.immortal_pick
+            ? (highlight.immortal_win || 0) / highlight.immortal_pick
+            : 0,
+          source: highlight.source
         }
       : null,
-    summary: { contestedTotal, pickTotal, banTotal }
+    summary: { pickTotal, winTotal }
   };
 }
 
@@ -205,7 +208,7 @@ function buildProMetaSnapshot(heroStats) {
     lastUpdated: Date.now(),
     players: [],
     heroStats: [],
-    proMeta: { timestamp: 0, heroes: [], highlight: null, summary: { contestedTotal: 0, pickTotal: 0, banTotal: 0 } },
+    proMeta: { timestamp: 0, heroes: [], highlight: null, summary: { pickTotal: 0, winTotal: 0 } },
     proRoster: { timestamp: 0, players: [] },     // placeholder for future speedups
     similarCache: { timestamp: 0, players: {} },  // placeholder (client can still compute)
     fetchInfo: { runtimeMs: 0, apiCalls: 0, status: "running" }

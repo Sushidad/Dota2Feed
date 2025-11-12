@@ -204,15 +204,15 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
         <div id="feed" class="feed"></div>
       </main>
       <aside class="card meta-sidebar">
-        <h3>Tracked Pro Meta</h3>
+        <h3>Immortal Hero Meta</h3>
         <div id="proMetaCard" class="fact-card meta-card">
           <div class="fact-head">
             <div>
-              <div class="meta-title">Tracked Pro Meta</div>
-              <div class="small">Snapshot updates when data.json is refreshed.</div>
+              <div class="meta-title">Immortal Meta Snapshot</div>
+              <div class="small">High-MMR pubs (Immortal bracket) – updates when data.json is refreshed.</div>
             </div>
           </div>
-          <div class="meta-message">Loading precomputed pro meta snapshot…</div>
+          <div class="meta-message">Loading precomputed Immortal meta snapshot…</div>
         </div>
       </aside>
     </div>
@@ -240,6 +240,7 @@ const FANTASY_ROLES = {
   2: 'Support'
 };
 const FEED_POST_LIMIT = 30;
+const IMMORTAL_HIGHLIGHT_MIN_MATCHES = 200;
 
 const HERO_LEVEL_XP = [
   0, 240, 600, 1080, 1660, 2260, 2940, 3660, 4460, 5360,
@@ -832,42 +833,48 @@ function buildProMetaSnapshot(heroStats) {
   const entries = (heroStats || []).map(hero => {
     const heroId = Number(hero.id);
     if (!Number.isFinite(heroId)) return null;
-    const picks = Number(hero.pro_pick) || 0;
-    const bans = Number(hero.pro_ban) || 0;
-    const wins = Number(hero.pro_win) || 0;
-    const contested = picks + bans;
-    if (!contested) return null;
+    const immortalPick = Number(hero['8_pick']) || 0;
+    const immortalWin = Number(hero['8_win']) || 0;
+    const proPick = Number(hero.pro_pick) || 0;
+    const proWin = Number(hero.pro_win) || 0;
+    const pick = immortalPick > 0 ? immortalPick : proPick;
+    const win = immortalPick > 0 ? immortalWin : proWin;
+    if (!pick) return null;
     return {
       hero_id: heroId,
-      contested,
-      pro_pick: picks,
-      pro_ban: bans,
-      pro_win: wins
+      immortal_pick: pick,
+      immortal_win: win,
+      source: immortalPick > 0 ? 'immortal' : 'pro'
     };
-  }).filter(Boolean).sort((a, b) => (b.contested || 0) - (a.contested || 0));
+  }).filter(Boolean).sort((a, b) => (b.immortal_pick || 0) - (a.immortal_pick || 0));
+
   const heroes = entries.slice(0, 30);
+  const pickTotal = heroes.reduce((sum, entry) => sum + (entry.immortal_pick || 0), 0);
+  const winTotal = heroes.reduce((sum, entry) => sum + (entry.immortal_win || 0), 0);
+
   const highlight = heroes
-    .filter(entry => (entry.pro_pick || 0) >= 15)
+    .filter(entry => (entry.immortal_pick || 0) >= IMMORTAL_HIGHLIGHT_MIN_MATCHES)
     .sort((a, b) => {
-      const winA = (a.pro_pick || 0) ? (a.pro_win || 0) / a.pro_pick : 0;
-      const winB = (b.pro_pick || 0) ? (b.pro_win || 0) / b.pro_pick : 0;
+      const winA = (a.immortal_pick || 0) ? (a.immortal_win || 0) / a.immortal_pick : 0;
+      const winB = (b.immortal_pick || 0) ? (b.immortal_win || 0) / b.immortal_pick : 0;
       return winB - winA;
-    })[0] || heroes.find(entry => (entry.pro_pick || 0) > 0) || null;
-  const contestedTotal = heroes.reduce((sum, entry) => sum + (entry.contested || 0), 0);
-  const pickTotal = heroes.reduce((sum, entry) => sum + (entry.pro_pick || 0), 0);
-  const banTotal = heroes.reduce((sum, entry) => sum + (entry.pro_ban || 0), 0);
+    })[0] || heroes.find(entry => (entry.immortal_pick || 0) > 0) || null;
+
   return {
     timestamp: Date.now(),
     heroes,
     highlight: highlight
       ? {
           hero_id: highlight.hero_id,
-          pro_pick: highlight.pro_pick,
-          pro_win: highlight.pro_win,
-          winRate: highlight.pro_pick ? highlight.pro_win / highlight.pro_pick : 0
+          immortal_pick: highlight.immortal_pick,
+          immortal_win: highlight.immortal_win,
+          winRate: highlight.immortal_pick
+            ? (highlight.immortal_win || 0) / highlight.immortal_pick
+            : 0,
+          source: highlight.source
         }
       : null,
-    summary: { contestedTotal, pickTotal, banTotal }
+    summary: { pickTotal, winTotal }
   };
 }
 
@@ -875,29 +882,37 @@ function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.no
   const heroes = Array.isArray(snapshot?.heroes) ? snapshot.heroes : [];
   if (!heroes.length) {
     return {
-      subtitle: cached ? 'Cached snapshot unavailable.' : 'Unable to load pro picks & bans.',
-      body: '<div class="meta-message">No contested heroes to display right now.</div>',
-      footer: 'Snapshot sourced from OpenDota heroStats'
+      subtitle: cached ? 'Cached snapshot unavailable.' : 'Unable to load Immortal pick data.',
+      body: '<div class="meta-message">No Immortal heroes to display right now.</div>',
+      footer: 'Snapshot sourced from Immortal (rank 8) pubs via OpenDota heroStats'
     };
   }
+  const hasImmortalData = heroes.some(entry => Number(entry.immortal_pick ?? 0) > 0);
+  const metaLabel = hasImmortalData ? 'Immortal' : 'Pro';
+  const matchesLabel = `${metaLabel} matches`;
+  const noDataLabel = `No ${metaLabel.toLowerCase()} match data`;
+  const sourceFooter = hasImmortalData
+    ? 'Immortal (rank 8) pubs via OpenDota heroStats'
+    : 'Pro scene picks via OpenDota heroStats';
+  const pickTotal = snapshot.summary?.pickTotal ?? heroes.reduce((sum, entry) => sum + (Number(entry.immortal_pick ?? entry.pro_pick ?? entry.games ?? 0)), 0);
+  const winTotal = snapshot.summary?.winTotal ?? heroes.reduce((sum, entry) => sum + (Number(entry.immortal_win ?? entry.pro_win ?? entry.win ?? 0)), 0);
+  const combinedWinRate = pickTotal ? winTotal / pickTotal : 0;
   const highlight = snapshot.highlight || (heroes
-    .filter(entry => (entry.pro_pick || 0) >= 15)
+    .filter(entry => (Number(entry.immortal_pick ?? entry.pro_pick ?? 0)) >= IMMORTAL_HIGHLIGHT_MIN_MATCHES)
     .sort((a, b) => {
-      const winA = (a.pro_pick || 0) ? (a.pro_win || 0) / a.pro_pick : 0;
-      const winB = (b.pro_pick || 0) ? (b.pro_win || 0) / b.pro_pick : 0;
+      const pickA = Number(a.immortal_pick ?? a.pro_pick ?? 0);
+      const pickB = Number(b.immortal_pick ?? b.pro_pick ?? 0);
+      const winA = pickA ? Number(a.immortal_win ?? a.pro_win ?? 0) / pickA : 0;
+      const winB = pickB ? Number(b.immortal_win ?? b.pro_win ?? 0) / pickB : 0;
       return winB - winA;
-    })[0] || heroes.find(entry => (entry.pro_pick || 0) > 0) || null);
-  const contestedTotal = snapshot.summary?.contestedTotal ?? heroes.reduce((sum, entry) => sum + (entry.contested || 0), 0);
-  const pickTotal = snapshot.summary?.pickTotal ?? heroes.reduce((sum, entry) => sum + (entry.pro_pick || 0), 0);
-  const banTotal = snapshot.summary?.banTotal ?? heroes.reduce((sum, entry) => sum + (entry.pro_ban || 0), 0);
+    })[0] || heroes.find(entry => Number(entry.immortal_pick ?? entry.pro_pick ?? 0) > 0) || null);
   const heroListHtml = heroes.map((entry, idx) => {
-    const winRate = (entry.pro_pick || 0) ? (entry.pro_win || 0) / entry.pro_pick : 0;
-    const contestedLabel = `${entry.contested.toLocaleString()} contested`;
-    const pickLabel = `${(entry.pro_pick || 0).toLocaleString()} picks`;
-    const banLabel = `${(entry.pro_ban || 0).toLocaleString()} bans`;
-    const metrics = (entry.pro_pick || 0)
-      ? `${contestedLabel} • ${pickLabel} • ${banLabel} • ${fmtPct(winRate)} win`
-      : `${contestedLabel} • ${banLabel} • No pro picks`;
+    const pick = Number(entry.immortal_pick ?? entry.pro_pick ?? entry.games ?? 0);
+    const win = Number(entry.immortal_win ?? entry.pro_win ?? entry.win ?? 0);
+    const winRate = pick ? win / pick : 0;
+    const metrics = pick
+      ? `${pick.toLocaleString()} ${matchesLabel} • ${fmtPct(winRate)} win`
+      : noDataLabel;
     const heroLabel = heroName(entry.hero_id);
     return `
       <div class="meta-hero">
@@ -910,27 +925,28 @@ function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.no
       </div>`;
   }).join('');
   const highlightHtml = highlight ? (() => {
-    const winRate = highlight.winRate ?? ((highlight.pro_pick || 0) ? (highlight.pro_win || 0) / highlight.pro_pick : 0);
-    const pickLabel = highlight.pro_pick ? `${highlight.pro_pick.toLocaleString()} picks` : 'no recorded picks';
+    const pick = Number(highlight.immortal_pick ?? highlight.pro_pick ?? 0);
+    const win = Number(highlight.immortal_win ?? highlight.pro_win ?? 0);
+    const winRate = highlight.winRate ?? (pick ? win / pick : 0);
+    const pickLabel = pick ? `${pick.toLocaleString()} ${matchesLabel}` : `no ${metaLabel.toLowerCase()} matches`;
     return `
       <div class="meta-highlight">
-        <span>Most successful contested hero</span>
+        <span>Most successful ${metaLabel} hero</span>
         <b>${escapeHtml(heroName(highlight.hero_id))}</b>
         ${escapeHtml(`${fmtPct(winRate)} across ${pickLabel}`)}
       </div>`;
   })() : '';
   const summaryBits = [
-    `Top ${heroes.length} contested heroes`,
-    `${contestedTotal.toLocaleString()} contested`,
-    `${pickTotal.toLocaleString()} picks`,
-    `${banTotal.toLocaleString()} bans`
+    `Top ${heroes.length} ${metaLabel} heroes`,
+    `${pickTotal.toLocaleString()} ${matchesLabel}`,
+    `${fmtPct(combinedWinRate)} combined win rate`
   ];
   const summaryHtml = `<div class="meta-summary">${escapeHtml(summaryBits.join(' • '))}</div>`;
-  const subtitleBits = ['Top 30 contested heroes'];
+  const subtitleBits = [`Top 30 ${metaLabel} heroes`];
   if (Number.isFinite(timestamp)) {
     subtitleBits.push(`${cached ? 'cached' : 'updated'} ${fmtRelativeTime(timestamp)}`);
   }
-  const footerBits = ['Snapshot sourced from OpenDota heroStats'];
+  const footerBits = [`Snapshot sourced from ${sourceFooter}`];
   if (Number.isFinite(timestamp)) {
     footerBits.push(`${cached ? 'Cached' : 'Updated'} ${fmtRelativeTime(timestamp)}`);
   }
@@ -952,17 +968,19 @@ function renderProMeta(snapshot) {
     cached: Boolean(source?.timestamp),
     timestamp: source?.timestamp ?? snapshot.lastUpdated ?? Date.now()
   });
-  const subtitleMarkup = view.subtitle ? `<div class="small">${escapeHtml(view.subtitle)}</div>` : '<div class="small">Snapshot of pro pick &amp; ban trends.</div>';
+  const subtitleMarkup = view.subtitle
+    ? `<div class="small">${escapeHtml(view.subtitle)}</div>`
+    : '<div class="small">Immortal pubs (rank 8) snapshot.</div>';
   const footerAttr = view.footerTitle ? ` title="${escapeHtml(view.footerTitle)}"` : '';
   const footerMarkup = view.footer ? `<div class="meta-updated"${footerAttr}>${escapeHtml(view.footer)}</div>` : '';
   container.innerHTML = `
     <div class="fact-head">
       <div>
-        <div class="meta-title">Tracked Pro Meta</div>
+        <div class="meta-title">Immortal Meta Snapshot</div>
         ${subtitleMarkup}
       </div>
     </div>
-    ${view.body || '<div class="meta-message">No pro meta data to display right now.</div>'}
+    ${view.body || '<div class="meta-message">No Immortal meta data to display right now.</div>'}
     ${footerMarkup}
   `;
 }
@@ -1011,11 +1029,11 @@ async function bootstrap({ force = false } = {}) {
         proMetaCard.innerHTML = `
           <div class="fact-head">
             <div>
-              <div class="meta-title">Tracked Pro Meta</div>
+              <div class="meta-title">Immortal Meta Snapshot</div>
               <div class="small">Snapshot unavailable.</div>
             </div>
           </div>
-          <div class="meta-message error">Unable to load pro meta data.</div>
+          <div class="meta-message error">Unable to load Immortal meta data.</div>
         `;
       }
     }
