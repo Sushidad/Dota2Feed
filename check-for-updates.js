@@ -6,7 +6,6 @@
  */
 
 const fs = require("fs");
-const fetch = require("node-fetch");
 
 const IDS = [39984287, 50423134, 53635813, 86890516, 26467713, 81305221, 27081071];
 const API_BASE = "https://api.opendota.com/api";
@@ -18,8 +17,8 @@ async function sleep(ms) {
 async function safeFetch(url) {
   for (let i = 0; i < 3; i++) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(res.statusText);
+      const res = await fetch(url); // Node 18+ has fetch globally
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       return await res.json();
     } catch (e) {
       if (i < 2) {
