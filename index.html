@@ -366,7 +366,7 @@ const API = {
     try {
       const data = await fetchJson(`https://api.opendota.com/api/players/${id}/matches?date=28`, {
         retries: 3,
-        retryDelay: RATE_DELAY_OK * 2
+        retryDelay: RATE_DELAY_OK * 1
       });
       return Array.isArray(data) ? data : [];
     } catch (e) {
