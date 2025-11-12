@@ -25,7 +25,8 @@ const API = {
   heroes: () => j(`${BASE}/heroStats`),
   profile: (id) => j(`${BASE}/players/${id}`),
   recent: (id) => j(`${BASE}/players/${id}/recentMatches?limit=30`),
-  recent28: (id) => j(`${BASE}/players/${id}/matches?date=28`)
+  recent28: (id) => j(`${BASE}/players/${id}/matches?date=28`),
+  heroesAllTime: (id) => j(`${BASE}/players/${id}/heroes`)
 };
 
 const BASE = "https://api.opendota.com/api";
@@ -228,7 +229,9 @@ function buildProMetaSnapshot(heroStats) {
     await sleep(RATE_DELAY_OK);
     const recent28 = (await API.recent28(id).catch(() => null)) || [];
     await sleep(RATE_DELAY_OK);
-    apiCalls += 3;
+    const heroesAllTime = (await API.heroesAllTime(id).catch(() => null)) || [];
+    await sleep(RATE_DELAY_OK);
+    apiCalls += 4;
 
     if (!profile) {
       console.warn(`Skipping ${id}: profile not found or 404`);
@@ -238,6 +241,18 @@ function buildProMetaSnapshot(heroStats) {
     const facts = buildFacts(matches, recent28);
     const recentHeroes = buildRecentHeroStats(matches, 20);
 
+    const topAllTime = Array.isArray(heroesAllTime)
+      ? heroesAllTime
+          .slice()
+          .sort((a, b) => (Number(b.games) || 0) - (Number(a.games) || 0))
+          .slice(0, 10)
+          .map((hero) => ({
+            hero_id: Number(hero.hero_id),
+            games: Number(hero.games) || 0,
+            win: Number(hero.win) || 0
+          }))
+      : [];
+
     out.players.push({
       id,
       profile,
@@ -245,6 +260,8 @@ function buildProMetaSnapshot(heroStats) {
       recent28: Array.isArray(recent28) ? recent28 : [],
       facts,
       recentHeroes,
+      heroesAllTime: topAllTime,
+      metaMatches: [],
       similar: {
         pro: null,
         overlap: { score: 0, weight: 0, shared: [] },
@@ -257,6 +274,22 @@ function buildProMetaSnapshot(heroStats) {
   // pro meta snapshot
   console.log("Building pro meta snapshot…");
   out.proMeta = buildProMetaSnapshot(out.heroStats);
+
+  if (out.proMeta && Array.isArray(out.proMeta.heroes)) {
+    const metaHeroSet = new Set(out.proMeta.heroes.map((h) => Number(h.hero_id)));
+    for (const player of out.players) {
+      const pool = Array.isArray(player.heroesAllTime) ? player.heroesAllTime : [];
+      const matches = [];
+      for (const hero of pool) {
+        if (!Number.isFinite(hero.hero_id)) continue;
+        if (metaHeroSet.has(hero.hero_id)) {
+          matches.push(hero);
+        }
+        if (matches.length >= 3) break;
+      }
+      player.metaMatches = matches;
+    }
+  }
 
   // finalize
   out.fetchInfo = {
