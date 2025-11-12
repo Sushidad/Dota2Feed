@@ -58,24 +58,54 @@ async function j(url, { retries = 3 } = {}) {
   let attempt = 0;
   while (true) {
     try {
+      const attemptNo = attempt + 1;
+      console.log(`[fetch] ${url} (attempt ${attemptNo})`);
       const res = await schedule(() => fetch(url));
+      const rateRemaining =
+        res.headers.get("x-ratelimit-remaining") ||
+        res.headers.get("x-rate-limit-remaining");
+      const rateReset =
+        res.headers.get("x-ratelimit-reset") || res.headers.get("x-rate-limit-reset");
       if (!res.ok) {
         const { status } = res;
         if (attempt < retries && (RETRY_STATUSES.has(status) || status === 408)) {
+          if (status === 429) {
+            console.warn(
+              `[fetch] ${url} -> 429 (rate limited). Remaining=${rateRemaining ?? "?"} reset=${rateReset ?? "?"}`
+            );
+          } else {
+            console.warn(`[fetch] ${url} -> ${status}. Retrying soon…`);
+          }
           await sleep(status === 429 ? RATE_DELAY_429 : RATE_DELAY_OK);
           attempt++;
           continue;
         }
-        if (status === 404) return null; // treat missing as “skip”
+        if (status === 404) {
+          console.warn(`[fetch] ${url} -> 404 (not found). Skipping.`);
+          return null; // treat missing as “skip”
+        }
+        const bodyPreview = await res.text().catch(() => "<no body>");
+        console.error(
+          `[fetch] ${url} failed with status ${status}. Remaining=${rateRemaining ?? "?"} reset=${rateReset ?? "?"}. Body: ${bodyPreview.slice(
+            0,
+            200
+          )}`
+        );
         throw new Error(`Bad status ${status} for ${url}`);
       }
-      return await res.json();
+      const json = await res.json();
+      if (rateRemaining !== null) {
+        console.log(`[fetch] ${url} ✓ remaining=${rateRemaining} reset=${rateReset ?? "?"}`);
+      }
+      return json;
     } catch (err) {
       if (attempt < retries) {
+        console.warn(`[fetch] ${url} error: ${err.message}. Retrying (${attempt + 1}/${retries})…`);
         await sleep(RATE_DELAY_OK);
         attempt++;
         continue;
       }
+      console.error(`[fetch] ${url} failed after ${attempt + 1} attempts:`, err);
       throw err;
     }
   }
@@ -224,25 +254,46 @@ function buildProMetaSnapshot(heroStats) {
   out.heroStats = Array.isArray(heroStats) ? heroStats : [];
 
   // players
+  const skippedPlayers = [];
   for (const id of IDS) {
     console.log(`Fetching player ${id}…`);
-    const profile = await API.profile(id).catch(() => null);
+    const profile = await API.profile(id).catch((err) => {
+      console.warn(`[player ${id}] profile fetch failed: ${err.message}`);
+      return null;
+    });
     await sleep(RATE_DELAY_OK);
-    const matches = (await API.recent(id).catch(() => null)) || [];
+    const matches =
+      (await API.recent(id).catch((err) => {
+        console.warn(`[player ${id}] recent matches failed: ${err.message}`);
+        return null;
+      })) || [];
     await sleep(RATE_DELAY_OK);
-    const recent28 = (await API.recent28(id).catch(() => null)) || [];
+    const recent28 =
+      (await API.recent28(id).catch((err) => {
+        console.warn(`[player ${id}] last-28d matches failed: ${err.message}`);
+        return null;
+      })) || [];
     await sleep(RATE_DELAY_OK);
-    const heroesAllTime = (await API.heroesAllTime(id).catch(() => null)) || [];
+    const heroesAllTime =
+      (await API.heroesAllTime(id).catch((err) => {
+        console.warn(`[player ${id}] heroes (all time) failed: ${err.message}`);
+        return null;
+      })) || [];
     await sleep(RATE_DELAY_OK);
     apiCalls += 4;
 
     if (!profile) {
       console.warn(`Skipping ${id}: profile not found or 404`);
+      skippedPlayers.push(id);
       continue;
     }
 
     const facts = buildFacts(matches, recent28);
     const recentHeroes = buildRecentHeroStats(matches, 20);
+
+    console.log(
+      `[player ${id}] processed. realMatches=${facts.total} recent28=${facts.recentCount} heroesAllTime=${heroesAllTime.length}`
+    );
 
     const topAllTime = Array.isArray(heroesAllTime)
       ? heroesAllTime
@@ -277,6 +328,12 @@ function buildProMetaSnapshot(heroStats) {
   // pro meta snapshot
   console.log("Building pro meta snapshot…");
   out.proMeta = buildProMetaSnapshot(out.heroStats);
+
+  console.log(
+    `Players processed: ${out.players.length}/${IDS.length}. Skipped: ${
+      skippedPlayers.length ? skippedPlayers.join(", ") : "none"
+    }.`
+  );
 
   if (out.proMeta && Array.isArray(out.proMeta.heroes)) {
     const metaHeroSet = new Set(out.proMeta.heroes.map((h) => Number(h.hero_id)));
