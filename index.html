@@ -57,6 +57,23 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .fact-card { border: 1px solid #1f2937; border-radius: 16px; padding: 12px; background: linear-gradient(180deg, rgba(255, 255, 255, .03), rgba(0, 0, 0, 0)); }
 .fact-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; }
 .fact-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.meta-card { background: linear-gradient(180deg, rgba(147, 51, 234, .12), rgba(12, 20, 34, .7)); border-color: rgba(147, 51, 234, .35); }
+.meta-title { font-weight: 700; font-size: 15px; color: var(--meta); }
+.meta-loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 16px 0; color: var(--muted); font-size: 13px; }
+.meta-heroes { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.meta-hero { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; background: #0c1422; border: 1px solid #1f2937; }
+.meta-rank { font-weight: 700; color: var(--meta); min-width: 28px; text-align: center; }
+.meta-hero img { width: 48px; height: 28px; border-radius: 10px; object-fit: cover; }
+.meta-body { display: flex; flex-direction: column; gap: 3px; }
+.meta-name { font-weight: 600; color: var(--text); }
+.meta-metrics { font-size: 12px; color: var(--muted); }
+.meta-highlight { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(147, 51, 234, .18); border: 1px solid rgba(147, 51, 234, .35); font-size: 12px; color: var(--muted); }
+.meta-highlight span { font-weight: 600; color: var(--meta); margin-right: 6px; }
+.meta-highlight b { color: var(--text); }
+.meta-summary { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.meta-message { font-size: 12px; color: var(--muted); text-align: center; padding: 12px 0; }
+.meta-message.error { color: var(--bad); }
+.meta-updated { margin-top: 10px; font-size: 11px; color: var(--muted); text-align: right; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
 .fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .fact-item { background: #0c1422; border: 1px solid #203049; border-radius: 12px; padding: 10px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
@@ -210,6 +227,7 @@ const PRO_TEAM_WHITELIST = new Set([
   'BOOM Esports',
   'Team Nemesis'
 ]);
+const PRO_META_CARD_ID = 'proMetaCard';
 const PRO_HERO_CONCURRENCY = 3;
 const MAX_PROS_PER_TEAM = 6;
 const FANTASY_ROLES = {
@@ -409,6 +427,7 @@ async function ensurePlayersReady() {
 
 beginPlayerLoad();
 let activeSimilarJob = null;
+let proMetaRunCounter = 0;
 const statusLogEl = document.getElementById('statusLog');
 const statusPanel = statusLogEl?.closest('.status-panel') || null;
 
@@ -702,8 +721,33 @@ function computeSharedHeroes(playerTop, proTop) {
 
 const fmtHeroWinRate = (win, games) => {
   if (!games) return '—';
-  return `${Math.round((win || 0) / games * 100)}% win`; 
+  return `${Math.round((win || 0) / games * 100)}% win`;
 };
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function fmtRelativeTime(timestamp) {
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || ts <= 0) {
+    return '';
+  }
+  const diff = Date.now() - ts;
+  if (diff <= 0) return 'just now';
+  const minutes = Math.round(diff / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(diff / 3600000);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.round(diff / 86400000);
+  return `${days}d ago`;
+}
 
 const abortError = () => {
   const err = new Error('Comparison aborted');
@@ -1024,7 +1068,17 @@ function renderFacts(players) {
         </div>
       </div>`;
   }).join('');
-  facts.innerHTML = markup;
+  const metaPlaceholder = `
+    <div id="${PRO_META_CARD_ID}" class="fact-card meta-card">
+      <div class="fact-head">
+        <div>
+          <div class="meta-title">Tracked Pro Meta</div>
+          <div class="small">Cached snapshot updates every 48 hours.</div>
+        </div>
+      </div>
+      <div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading tracked pro hero pools…</span></div>
+    </div>`;
+  facts.innerHTML = markup + metaPlaceholder;
   const buttons = facts.querySelectorAll('button[data-similar]');
   buttons.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1033,6 +1087,7 @@ function renderFacts(players) {
       showSimilarPro(playerId);
     });
   });
+  loadProMetaPanel();
 }
 
 /* ---------- Render Feed ---------- */
@@ -1146,6 +1201,167 @@ function closeModal() {
   if (backdrop) {
     backdrop.style.display = 'none';
     backdrop.setAttribute('aria-hidden', 'true');
+  }
+}
+
+/* ---------- Pro Meta Panel ---------- */
+function renderProMetaCard(runId, { subtitle, body, footer, footerTitle } = {}) {
+  if (runId !== proMetaRunCounter) return;
+  const container = document.getElementById(PRO_META_CARD_ID);
+  if (!container) return;
+  const subtitleMarkup = subtitle
+    ? `<div class="small">${escapeHtml(subtitle)}</div>`
+    : '<div class="small">Snapshot of tracked pro hero pools.</div>';
+  const footerAttr = footerTitle ? ` title="${escapeHtml(footerTitle)}"` : '';
+  const footerMarkup = footer
+    ? `<div class="meta-updated"${footerAttr}>${escapeHtml(footer)}</div>`
+    : '';
+  container.innerHTML = `
+    <div class="fact-head">
+      <div>
+        <div class="meta-title">Tracked Pro Meta</div>
+        ${subtitleMarkup}
+      </div>
+    </div>
+    ${body || '<div class="meta-message">No pro meta data to display right now.</div>'}
+    ${footerMarkup}
+  `;
+}
+
+async function loadProMetaPanel() {
+  const container = document.getElementById(PRO_META_CARD_ID);
+  if (!container) return;
+  const runId = ++proMetaRunCounter;
+  renderProMetaCard(runId, {
+    subtitle: 'Loading tracked pro hero pools…',
+    body: '<div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading tracked pro hero pools…</span></div>'
+  });
+  try {
+    const roster = await fetchProRoster();
+    if (!Array.isArray(roster) || roster.length === 0) {
+      renderProMetaCard(runId, {
+        subtitle: 'Tracked pro roster unavailable right now.',
+        body: '<div class="meta-message error">Unable to load tracked pro meta data.</div>',
+        footer: 'Cached for up to 48h'
+      });
+      return;
+    }
+    const heroTotals = new Map();
+    let processed = 0;
+    let aggregated = 0;
+    let latestTs = 0;
+    let index = 0;
+    const total = roster.length;
+    const limit = Math.min(PRO_HERO_CONCURRENCY, Math.max(1, total));
+    async function worker() {
+      while (true) {
+        if (runId !== proMetaRunCounter) return;
+        const current = index++;
+        if (current >= total) break;
+        const pro = roster[current];
+        try {
+          const heroList = await fetchProHeroStats(pro.account_id);
+          const metaTs = PRO_CACHE.heroMeta.get(pro.account_id);
+          if (metaTs) {
+            latestTs = Math.max(latestTs, metaTs);
+          }
+          processed += 1;
+          if (!Array.isArray(heroList) || heroList.length === 0) {
+            continue;
+          }
+          aggregated += 1;
+          heroList.forEach(entry => {
+            const normalized = normalizeHeroSample(entry);
+            if (!normalized) return;
+            const games = Number(normalized.games) || 0;
+            if (!games) return;
+            const win = Number(normalized.win) || 0;
+            let bucket = heroTotals.get(normalized.hero_id);
+            if (!bucket) {
+              bucket = { hero_id: normalized.hero_id, games: 0, win: 0 };
+              heroTotals.set(normalized.hero_id, bucket);
+            }
+            bucket.games += games;
+            bucket.win += win;
+          });
+        } catch (err) {
+          console.warn('Pro meta panel hero stats failed', pro.account_id, err);
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: limit }, () => worker()));
+    if (runId !== proMetaRunCounter) {
+      return;
+    }
+    const skipped = Math.max(0, total - processed);
+    if (!heroTotals.size) {
+      renderProMetaCard(runId, {
+        subtitle: `Tracking ${processed}/${total} pros • ${PRO_TEAM_WHITELIST.size} teams`,
+        body: '<div class="meta-message">No hero pool data available from the tracked pros yet.</div>',
+        footer: skipped ? `Cached for up to 48h • ${skipped} pro pools unavailable` : 'Cached for up to 48h'
+      });
+      return;
+    }
+    const heroEntries = [...heroTotals.values()].map(entry => ({
+      hero_id: entry.hero_id,
+      games: entry.games,
+      win: entry.win,
+      winRate: entry.games ? entry.win / entry.games : 0
+    })).sort((a, b) => (b.games || 0) - (a.games || 0));
+    const topHeroes = heroEntries.slice(0, 5);
+    const highlight = heroEntries
+      .filter(entry => entry.games >= 30)
+      .sort((a, b) => b.winRate - a.winRate)[0] || null;
+    const totalGames = heroEntries.reduce((sum, entry) => sum + (entry.games || 0), 0);
+    const heroListHtml = topHeroes.map((entry, idx) => {
+      const heroLabel = escapeHtml(heroName(entry.hero_id));
+      const metrics = `${entry.games.toLocaleString()} games • ${fmtPct(entry.winRate)}`;
+      return `
+        <div class="meta-hero">
+          <div class="meta-rank">#${idx + 1}</div>
+          <img src="${heroImg(entry.hero_id)}" alt="${heroLabel}">
+          <div class="meta-body">
+            <div class="meta-name">${heroLabel}</div>
+            <div class="meta-metrics">${escapeHtml(metrics)}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    const highlightHtml = highlight ? `
+      <div class="meta-highlight">
+        <span>Highest win rate (≥30 games)</span>
+        <b>${escapeHtml(heroName(highlight.hero_id))}</b>
+        ${escapeHtml(`${fmtPct(highlight.winRate)} across ${highlight.games.toLocaleString()} games`)}
+      </div>
+    ` : '';
+    const summaryBits = [];
+    if (aggregated) {
+      summaryBits.push(`${aggregated} hero pools aggregated`);
+    }
+    summaryBits.push(`${heroEntries.length} heroes`);
+    summaryBits.push(`${totalGames.toLocaleString()} games`);
+    const summaryHtml = `<div class="meta-summary">${escapeHtml(summaryBits.join(' • '))}</div>`;
+    const subtitle = `Tracking ${processed}/${total} pros • ${PRO_TEAM_WHITELIST.size} teams`;
+    const footBits = ['Cached for up to 48h'];
+    if (latestTs) {
+      footBits.push(`Latest data ${fmtRelativeTime(latestTs)}`);
+    }
+    if (skipped > 0) {
+      footBits.push(`${skipped} pro pools unavailable`);
+    }
+    renderProMetaCard(runId, {
+      subtitle,
+      body: `${highlightHtml}<div class="meta-heroes">${heroListHtml}</div>${summaryHtml}`,
+      footer: footBits.join(' • '),
+      footerTitle: latestTs ? `Latest data ${new Date(latestTs).toLocaleString()}` : ''
+    });
+  } catch (err) {
+    console.warn('Pro meta panel failed', err);
+    renderProMetaCard(runId, {
+      subtitle: 'Unable to load tracked pro data right now.',
+      body: '<div class="meta-message error">Failed to load pro meta data. Please try again later.</div>',
+      footer: 'Cached for up to 48h'
+    });
   }
 }
 
