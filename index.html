@@ -265,10 +265,31 @@ function updateHeroCache(list) {
   });
 }
 
+function normalizeHeroRecord(record) {
+  if (!record || typeof record !== 'object') {
+    return null;
+  }
+  const heroId = Number(record.hero_id ?? record.id);
+  if (!Number.isFinite(heroId)) {
+    return null;
+  }
+  return {
+    hero_id: heroId,
+    games: Number(record.games) || 0,
+    win: Number(record.win) || 0
+  };
+}
+
 function normalizePlayerEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
   const matches = Array.isArray(entry.matches) ? entry.matches : [];
   const recent28 = Array.isArray(entry.recent28) ? entry.recent28 : [];
+  const heroesAllTime = Array.isArray(entry.heroesAllTime)
+    ? entry.heroesAllTime.map(normalizeHeroRecord).filter(Boolean).sort((a, b) => (b.games || 0) - (a.games || 0))
+    : [];
+  const metaMatches = Array.isArray(entry.metaMatches)
+    ? entry.metaMatches.map(normalizeHeroRecord).filter(Boolean).sort((a, b) => (b.games || 0) - (a.games || 0))
+    : [];
   const similar = entry.similar && typeof entry.similar === 'object'
     ? {
         pro: entry.similar.pro || null,
@@ -285,15 +306,53 @@ function normalizePlayerEntry(entry) {
     ...entry,
     matches,
     recent28,
+    heroesAllTime,
+    metaMatches,
     similar
   };
 }
 
 function normalizeSnapshot(raw) {
   const data = raw && typeof raw === 'object' ? raw : {};
-  const players = Array.isArray(data.players)
+  const proMetaSource = (data.proMeta && Array.isArray(data.proMeta.heroes) && data.proMeta.heroes.length)
+    ? data.proMeta
+    : buildProMetaSnapshot(data.heroStats || []);
+  const metaHeroIds = new Set(
+    Array.isArray(proMetaSource?.heroes)
+      ? proMetaSource.heroes
+          .map(hero => Number(hero.hero_id ?? hero.id))
+          .filter(Number.isFinite)
+      : []
+  );
+  let players = Array.isArray(data.players)
     ? data.players.map(normalizePlayerEntry).filter(Boolean)
     : [];
+  if (metaHeroIds.size) {
+    players = players.map(player => {
+      const pool = Array.isArray(player.heroesAllTime) ? player.heroesAllTime : [];
+      const currentMeta = Array.isArray(player.metaMatches) ? player.metaMatches : [];
+      if (currentMeta.length) {
+        return player;
+      }
+      const matches = [];
+      for (const hero of pool) {
+        const heroId = Number(hero.hero_id ?? hero.id);
+        if (!Number.isFinite(heroId)) continue;
+        if (metaHeroIds.has(heroId)) {
+          matches.push({
+            hero_id: heroId,
+            games: Number(hero.games) || 0,
+            win: Number(hero.win) || 0
+          });
+        }
+        if (matches.length >= 3) break;
+      }
+      return {
+        ...player,
+        metaMatches: matches
+      };
+    });
+  }
   PLAYER_MAP.clear();
   players.forEach(player => {
     if (player && player.id != null) {
@@ -303,6 +362,7 @@ function normalizeSnapshot(raw) {
   updateHeroCache(data.heroStats);
   SNAPSHOT = {
     ...data,
+    proMeta: proMetaSource,
     players,
     heroStats: HERO_STATS
   };
