@@ -183,7 +183,7 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
     </header>
 
     <div class="status-panel" aria-live="polite">
-      <div class="status-title">OpenDota connection</div>
+      <div class="status-title">Data snapshot</div>
       <div id="statusLog" class="status-log"></div>
     </div>
 
@@ -202,10 +202,10 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
           <div class="fact-head">
             <div>
               <div class="meta-title">Tracked Pro Meta</div>
-              <div class="small">Cached snapshot updates every 48 hours.</div>
+              <div class="small">Snapshot updates when data.json is refreshed.</div>
             </div>
           </div>
-          <div class="meta-message">Waiting for player data before fetching pro meta…</div>
+          <div class="meta-message">Loading precomputed pro meta snapshot…</div>
         </div>
       </aside>
     </div>
@@ -223,290 +223,105 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
   </div>
 
 <script>
-/* ---------- Config ---------- */
-const IDS = [39984287, 50423134, 53635813, 86890516, 26467713, 81305221, 27081071];
+const DATA_URL = 'data.json';
+
 const VALID_GAME_MODES = [1, 2, 3, 4, 22];
 const VALID_LOBBY_TYPES = [0, 7];
-const MAX_DETAILED_MATCHES = 15;
-const RATE_DELAY_OK = 260;
-const RATE_DELAY_429 = 1500;
-const PRO_TEAM_WHITELIST = new Set([
-  'Team Falcons',
-  'Xtreme Gaming',
-  'BetBoom Team',
-  'PVISION',
-  'Team Tidebound',
-  'HEROIC',
-  'Aurora Gaming',
-  'Team Liquid',
-  'Nigma Galaxy',
-  'Tundra Esports',
-  'Yakult Brothers',
-  'Team Spirit',
-  'Wildcard',
-  'Natus Vincere',
-  'BOOM Esports',
-  'Team Nemesis'
-]);
 const PRO_META_CARD_ID = 'proMetaCard';
-const PRO_HERO_CONCURRENCY = 4;
-const MAX_PROS_PER_TEAM = 6;
 const FANTASY_ROLES = {
   1: 'Core',
   2: 'Support'
 };
+const FEED_POST_LIMIT = 30;
 
-const PLAYER_CONCURRENCY = 5;
-const PLAYER_CACHE_MAX_AGE = null; // rely on match activity to trigger refreshes
-const SIMILAR_CACHE_MAX_AGE = 1000 * 60 * 60 * 12; // 12 hours
+const HERO_LEVEL_XP = [
+  0, 240, 600, 1080, 1660, 2260, 2940, 3660, 4460, 5360,
+  6360, 7360, 8560, 9960, 11560, 13260, 15060, 17060, 19160, 21460,
+  23960, 26760, 29760, 32960, 36360, 40060, 44160, 48760, 53860, 59460
+];
 
-const delay = ms => new Promise(r => setTimeout(r, ms));
-
-function createThrottle(interval) {
-  let last = 0;
-  let chain = Promise.resolve();
-  return function schedule(task) {
-    const run = chain.then(async () => {
-      const now = Date.now();
-      const wait = Math.max(0, last + interval - now);
-      if (wait) {
-        await delay(wait);
-      }
-      const result = await task();
-      last = Date.now();
-      return result;
-    });
-    chain = run.catch(() => {});
-    return run;
-  };
-}
-
-const scheduleApiRequest = createThrottle(70);
-const scheduleProRequest = createThrottle(180);
-
-const PRO_CACHE_MAX_AGE = 1000 * 60 * 60 * 48;
-const STORAGE_KEYS = {
-  roster: 'd2f:proRoster',
-  hero: id => `d2f:proHeroes:${id}`,
-  player: id => `d2f:players:${id}`,
-  proMeta: 'd2f:proMetaSnapshot',
-  similar: id => `d2f:similar:${id}`
-};
-
-const localStore = (() => {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const testKey = '__d2f_cache_test__';
-      window.localStorage.setItem(testKey, '1');
-      window.localStorage.removeItem(testKey);
-      return window.localStorage;
-    }
-  } catch (err) {
-    // Ignore storage availability issues and fall back to in-memory caching only.
-  }
-  return null;
-})();
-
-function readCache(key, maxAge) {
-  if (!localStore) return null;
-  try {
-    const raw = localStore.getItem(key);
-    if (!raw) return null;
-    const payload = JSON.parse(raw);
-    if (!payload || typeof payload !== 'object') {
-      localStore.removeItem(key);
-      return null;
-    }
-    const ts = Number(payload.timestamp);
-    if (!Number.isFinite(ts)) {
-      localStore.removeItem(key);
-      return null;
-    }
-    if (maxAge && Date.now() - ts > maxAge) {
-      localStore.removeItem(key);
-      return null;
-    }
-    return { value: payload.value, timestamp: ts };
-  } catch (err) {
-    console.warn('Failed to read cache', key, err);
-    return null;
-  }
-}
-
-function writeCache(key, value) {
-  if (!localStore) return;
-  try {
-    const payload = JSON.stringify({ timestamp: Date.now(), value });
-    localStore.setItem(key, payload);
-  } catch (err) {
-    console.warn('Failed to write cache', key, err);
-  }
-}
-
-function removeCache(key) {
-  if (!localStore) return;
-  try {
-    localStore.removeItem(key);
-  } catch (err) {
-    console.warn('Failed to remove cache', key, err);
-  }
-}
-
-async function fetchJson(url, {
-  scheduler = scheduleApiRequest,
-  retries = 2,
-  retryStatuses = [429, 500, 502, 503, 504],
-  retryDelay = RATE_DELAY_OK,
-  options = {}
-} = {}) {
-  let attempt = 0;
-  while (true) {
-    try {
-      const response = await scheduler(() => fetch(url, options));
-      if (!response.ok) {
-        const status = response.status;
-        const err = new Error('Bad status ' + status);
-        err.status = status;
-        throw err;
-      }
-      return await response.json();
-    } catch (err) {
-      const status = err?.status;
-      const shouldRetry = status ? retryStatuses.includes(status) : attempt < retries;
-      if (attempt < retries && shouldRetry) {
-        await delay(status === 429 ? RATE_DELAY_429 : retryDelay);
-        attempt += 1;
-        continue;
-      }
-      throw err;
-    }
-  }
-}
-
-/* ---------- API ---------- */
-const API = {
-  heroes: () => fetchJson('https://api.opendota.com/api/heroStats'),
-  profile: id => fetchJson(`https://api.opendota.com/api/players/${id}`),
-  recent: id => fetchJson(`https://api.opendota.com/api/players/${id}/recentMatches?limit=30`),
-  latest: id => fetchJson(`https://api.opendota.com/api/players/${id}/recentMatches?limit=5`),
-  recent28: async id => {
-    try {
-      const data = await fetchJson(`https://api.opendota.com/api/players/${id}/matches?date=28`, {
-        retries: 3,
-        retryDelay: RATE_DELAY_OK * 2
-      });
-      return Array.isArray(data) ? data : [];
-    } catch (e) {
-      console.warn('recent28 failed', id, e);
-      return [];
-    }
-  },
-  match: mid => scheduleApiRequest(() => fetch(`https://api.opendota.com/api/matches/${mid}`)),
-  proPlayers: async () => {
-    const data = await fetchJson('https://api.opendota.com/api/proPlayers', {
-      retries: 3,
-      retryDelay: RATE_DELAY_OK * 2
-    });
-    return Array.isArray(data) ? data : [];
-  },
-  proHeroes: async id => {
-    const data = await fetchJson(`https://api.opendota.com/api/players/${id}/heroes`, {
-      scheduler: scheduleProRequest,
-      retries: 4,
-      retryDelay: RATE_DELAY_OK * 2
-    });
-    return Array.isArray(data) ? data : [];
-  }
-};
-
-/* ---------- Helpers ---------- */
 const HEROES = {};
-let HERO_STATS = null;
-let heroStatsPromise = null;
+let HERO_STATS = [];
+let SNAPSHOT = null;
+let snapshotPromise = null;
 const PLAYER_MAP = new Map();
-const SIMILAR_CACHE = new Map();
-const PRO_CACHE = {
-  rosterPromise: null,
-  rosterMeta: null,
-  heroMap: new Map(),
-  heroMeta: new Map()
-};
 
-async function ensureHeroStats() {
-  if (Array.isArray(HERO_STATS) && HERO_STATS.length) {
-    return HERO_STATS;
-  }
-  if (!heroStatsPromise) {
-    heroStatsPromise = (async () => {
-      const list = await API.heroes();
-      const safe = Array.isArray(list) ? list : [];
-      safe.forEach(h => { HEROES[h.id] = h; });
-      HERO_STATS = safe;
-      return safe;
-    })().catch(err => {
-      heroStatsPromise = null;
-      throw err;
-    });
-  }
-  const result = await heroStatsPromise;
-  if (Array.isArray(result)) {
-    HERO_STATS = result;
-    result.forEach(h => { HEROES[h.id] = h; });
-    return result;
-  }
-  return [];
-}
-function normalizePlayerCacheValue(value) {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-  const { profile, matches, recent28 } = value;
-  if (!profile || typeof profile !== 'object') {
-    return null;
-  }
-  if (!Array.isArray(matches) || !Array.isArray(recent28)) {
-    return null;
-  }
-  return { profile, matches, recent28 };
-}
+const statusLogEl = document.getElementById('statusLog');
+const statusPanel = statusLogEl?.closest('.status-panel') || null;
 
-function writePlayerCache(id, data) {
-  const payload = normalizePlayerCacheValue(data);
-  if (!payload) return;
-  writeCache(STORAGE_KEYS.player(id), payload);
-}
-
-function orderedPlayersById(map) {
-  return IDS.map(id => map.get(id)).filter(Boolean);
-}
-let playersLoaded = false;
-let playersReadyResolver = () => {};
-let playersReadyPromise = Promise.resolve();
-
-function beginPlayerLoad() {
-  playersLoaded = false;
-  playersReadyPromise = new Promise(resolve => {
-    playersReadyResolver = resolve;
+function updateHeroCache(list) {
+  HERO_STATS = Array.isArray(list) ? list : [];
+  HERO_STATS.forEach(hero => {
+    if (hero && hero.id != null) {
+      HEROES[hero.id] = hero;
+    }
   });
 }
 
-function markPlayersReady() {
-  if (!playersLoaded) {
-    playersLoaded = true;
-    playersReadyResolver();
+function normalizePlayerEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const matches = Array.isArray(entry.matches) ? entry.matches : [];
+  const recent28 = Array.isArray(entry.recent28) ? entry.recent28 : [];
+  const similar = entry.similar && typeof entry.similar === 'object'
+    ? {
+        pro: entry.similar.pro || null,
+        overlap: {
+          score: entry.similar.overlap?.score || 0,
+          weight: entry.similar.overlap?.weight || 0,
+          shared: Array.isArray(entry.similar.overlap?.shared) ? entry.similar.overlap.shared : []
+        },
+        playerTop: Array.isArray(entry.similar.playerTop) ? entry.similar.playerTop : [],
+        proTop: Array.isArray(entry.similar.proTop) ? entry.similar.proTop : []
+      }
+    : null;
+  return {
+    ...entry,
+    matches,
+    recent28,
+    similar
+  };
+}
+
+function normalizeSnapshot(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  const players = Array.isArray(data.players)
+    ? data.players.map(normalizePlayerEntry).filter(Boolean)
+    : [];
+  PLAYER_MAP.clear();
+  players.forEach(player => {
+    if (player && player.id != null) {
+      PLAYER_MAP.set(player.id, player);
+    }
+  });
+  updateHeroCache(data.heroStats);
+  SNAPSHOT = {
+    ...data,
+    players,
+    heroStats: HERO_STATS
+  };
+  return SNAPSHOT;
+}
+
+async function ensureSnapshot({ force = false } = {}) {
+  if (SNAPSHOT && !force) {
+    return SNAPSHOT;
   }
+  if (!snapshotPromise) {
+    const fetchOptions = force ? { cache: 'no-store' } : {};
+    snapshotPromise = fetch(DATA_URL, fetchOptions)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Failed to load data.json (${response.status})`);
+        }
+        return response.json();
+      })
+      .then(normalizeSnapshot)
+      .finally(() => {
+        snapshotPromise = null;
+      });
+  }
+  return snapshotPromise;
 }
-
-async function ensurePlayersReady() {
-  if (playersLoaded) return;
-  await playersReadyPromise;
-}
-
-beginPlayerLoad();
-let activeSimilarJob = null;
-let proMetaRunCounter = 0;
-const statusLogEl = document.getElementById('statusLog');
-const statusPanel = statusLogEl?.closest('.status-panel') || null;
 
 function resetStatus() {
   if (statusLogEl) {
@@ -560,19 +375,30 @@ function statusStep(message) {
   };
 }
 
-const fmtPct = n => ((n || 0) * 100).toFixed(1) + '%';
+const fmtPct = n => `${((n || 0) * 100).toFixed(1)}%`;
 const pad = n => String(n).padStart(2, '0');
 const fmtDur = s => `${Math.floor(s / 60)}:${pad(s % 60)}`;
-const isWin = m => (m.player_slot < 128 && m.radiant_win) || (m.player_slot >= 128 && !m.radiant_win);
+const fmtDate = ts => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 const heroName = id => HEROES[id]?.localized_name || 'Unknown';
 const heroKey = id => HEROES[id]?.name?.replace('npc_dota_hero_', '') || 'abaddon';
 const heroImg = id => `https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${heroKey(id)}.png`;
-const HERO_LEVEL_XP = [
-  0, 240, 600, 1080, 1660, 2260, 2940, 3660, 4460, 5360,
-  6360, 7360, 8560, 9960, 11560, 13260, 15060, 17060, 19160, 21460,
-  23960, 26760, 29760, 32960, 36360, 40060, 44160, 48760, 53860, 59460
-];
-const fmtDate = ts => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const isWin = m => (m.player_slot < 128 && m.radiant_win) || (m.player_slot >= 128 && !m.radiant_win);
+
+function fmtRelativeTime(timestamp) {
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || ts <= 0) {
+    return '';
+  }
+  const diff = Date.now() - ts;
+  if (diff <= 0) return 'just now';
+  const minutes = Math.round(diff / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(diff / 3600000);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.round(diff / 86400000);
+  return `${days}d ago`;
+}
 
 function formatMatchLevel(match) {
   if (!match) return '—';
@@ -606,32 +432,6 @@ function filterRealGames(list) {
   );
 }
 
-function sortMatchesByStart(list) {
-  return (list || []).slice().sort((a, b) => (b.start_time || 0) - (a.start_time || 0));
-}
-
-function latestComparableMatch(list) {
-  const filtered = sortMatchesByStart(filterRealGames(list));
-  if (filtered.length) {
-    return filtered[0];
-  }
-  const fallback = sortMatchesByStart(list);
-  return fallback.length ? fallback[0] : null;
-}
-
-function sameMatch(a, b) {
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  const idA = Number(a.match_id);
-  const idB = Number(b.match_id);
-  if (Number.isFinite(idA) && Number.isFinite(idB) && idA === idB) {
-    return true;
-  }
-  const tsA = Number(a.start_time);
-  const tsB = Number(b.start_time);
-  return Number.isFinite(tsA) && Number.isFinite(tsB) && tsA === tsB;
-}
-
 function aggregateFacts(matches, recent28) {
   const total = matches.length;
   const safeTotal = total || 1;
@@ -658,181 +458,6 @@ function aggregateFacts(matches, recent28) {
   return { wins, total, kda, gpm, xpm, avgPings, topHeroes, unique, recentCount, winRate };
 }
 
-async function fetchProRoster() {
-  const now = Date.now();
-  if (PRO_CACHE.rosterMeta?.timestamp && now - PRO_CACHE.rosterMeta.timestamp > PRO_CACHE_MAX_AGE) {
-    PRO_CACHE.rosterPromise = null;
-    PRO_CACHE.rosterMeta = null;
-  }
-  if (!PRO_CACHE.rosterPromise) {
-    const cached = readCache(STORAGE_KEYS.roster, PRO_CACHE_MAX_AGE);
-    if (cached && Array.isArray(cached.value)) {
-      PRO_CACHE.rosterMeta = { timestamp: cached.timestamp };
-      PRO_CACHE.rosterPromise = Promise.resolve(cached.value);
-    } else {
-      if (cached) {
-        removeCache(STORAGE_KEYS.roster);
-      }
-      PRO_CACHE.rosterPromise = (async () => {
-        await ensurePlayersReady();
-        const list = await API.proPlayers();
-        const grouped = new Map();
-        (list || []).forEach(player => {
-          const teamName = (player.team_name || '').trim();
-          if (!teamName || !PRO_TEAM_WHITELIST.has(teamName)) return;
-          const accountId = player.account_id;
-          if (!accountId && accountId !== 0) return;
-          if (!grouped.has(teamName)) {
-            grouped.set(teamName, new Map());
-          }
-          const teamMap = grouped.get(teamName);
-          const existing = teamMap.get(accountId);
-          if (!existing || (player.last_played || 0) > (existing.last_played || 0)) {
-            teamMap.set(accountId, player);
-          }
-        });
-        const trimmed = [];
-        for (const teamMap of grouped.values()) {
-          const players = [...teamMap.values()]
-            .sort((a, b) => (b.last_played || 0) - (a.last_played || 0))
-            .slice(0, MAX_PROS_PER_TEAM);
-          trimmed.push(...players);
-        }
-        writeCache(STORAGE_KEYS.roster, trimmed);
-        PRO_CACHE.rosterMeta = { timestamp: Date.now() };
-        return trimmed;
-      })();
-    }
-  }
-  try {
-    const roster = await PRO_CACHE.rosterPromise;
-    return Array.isArray(roster) ? roster : [];
-  } catch (err) {
-    console.warn('proPlayers failed', err);
-    PRO_CACHE.rosterPromise = null;
-    PRO_CACHE.rosterMeta = null;
-    removeCache(STORAGE_KEYS.roster);
-    return [];
-  }
-}
-
-async function fetchProHeroStats(accountId) {
-  const now = Date.now();
-  const metaTs = PRO_CACHE.heroMeta.get(accountId);
-  if (metaTs && now - metaTs > PRO_CACHE_MAX_AGE) {
-    PRO_CACHE.heroMap.delete(accountId);
-    PRO_CACHE.heroMeta.delete(accountId);
-  }
-  if (PRO_CACHE.heroMap.has(accountId)) {
-    return PRO_CACHE.heroMap.get(accountId);
-  }
-  const cacheKey = STORAGE_KEYS.hero(accountId);
-  const cached = readCache(cacheKey, PRO_CACHE_MAX_AGE);
-  if (cached && Array.isArray(cached.value)) {
-    PRO_CACHE.heroMeta.set(accountId, cached.timestamp);
-    PRO_CACHE.heroMap.set(accountId, cached.value);
-    return cached.value;
-  } else if (cached) {
-    removeCache(cacheKey);
-  }
-  const promise = (async () => {
-    await ensurePlayersReady();
-    try {
-      const list = await API.proHeroes(accountId);
-      const safeList = Array.isArray(list) ? list : [];
-      writeCache(cacheKey, safeList);
-      PRO_CACHE.heroMeta.set(accountId, Date.now());
-      return safeList;
-    } catch (err) {
-      console.warn('proHeroes failed', accountId, err);
-      throw err;
-    }
-  })();
-  PRO_CACHE.heroMap.set(accountId, promise);
-  try {
-    const resolved = await promise;
-    PRO_CACHE.heroMap.set(accountId, resolved);
-    return resolved;
-  } catch (err) {
-    PRO_CACHE.heroMap.delete(accountId);
-    PRO_CACHE.heroMeta.delete(accountId);
-    removeCache(cacheKey);
-    throw err;
-  }
-}
-
-function normalizeHeroSample(entry) {
-  if (!entry || entry.hero_id == null) return null;
-  const heroId = Number(entry.hero_id);
-  if (!Number.isFinite(heroId)) return null;
-  return { ...entry, hero_id: heroId };
-}
-
-const getTopHeroes = (list, count) => [...(list || [])]
-  .map(normalizeHeroSample)
-  .filter(item => item && (item.games || 0) > 0)
-  .sort((a, b) => (b.games || 0) - (a.games || 0))
-  .slice(0, count);
-
-function buildRecentHeroStats(matches, limit = 20) {
-  const ordered = filterRealGames(matches)
-    .slice()
-    .sort((a, b) => (b.start_time || 0) - (a.start_time || 0))
-    .slice(0, limit);
-  if (!ordered.length) {
-    return [];
-  }
-  const stats = new Map();
-  ordered.forEach(match => {
-    const heroId = Number(match?.hero_id);
-    if (!Number.isFinite(heroId)) return;
-    let entry = stats.get(heroId);
-    if (!entry) {
-      entry = { hero_id: heroId, games: 0, win: 0, last_played: 0 };
-      stats.set(heroId, entry);
-    }
-    entry.games += 1;
-    entry.win = (entry.win || 0) + (isWin(match) ? 1 : 0);
-    entry.last_played = Math.max(entry.last_played || 0, match.start_time || 0);
-  });
-  return [...stats.values()];
-}
-
-function getPlayerRecentTopHeroes(player, heroCount = 6, matchLimit = 20) {
-  if (!player) return [];
-  const recentStats = buildRecentHeroStats(player.matches || [], matchLimit);
-  return getTopHeroes(recentStats, heroCount);
-}
-
-function computeSharedHeroes(playerTop, proTop) {
-  const proMap = new Map();
-  proTop.forEach(item => {
-    const normalized = normalizeHeroSample(item);
-    if (!normalized) return;
-    proMap.set(normalized.hero_id, normalized);
-  });
-  const shared = [];
-  let score = 0;
-  let weight = 0;
-  for (const hero of playerTop) {
-    const normalized = normalizeHeroSample(hero);
-    if (!normalized) continue;
-    const match = proMap.get(normalized.hero_id);
-    if (!match) continue;
-    score += 1;
-    const combinedGames = (normalized.games || 0) + (match.games || 0);
-    weight += combinedGames;
-    shared.push({ id: normalized.hero_id, player: normalized, pro: match, combinedGames });
-  }
-  shared.sort((a, b) => (b.combinedGames || 0) - (a.combinedGames || 0));
-  return { score, weight, shared };
-}
-
-const fmtHeroWinRate = (win, games) => {
-  if (!games) return '—';
-  return `${Math.round((win || 0) / games * 100)}% win`;
-};
-
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -842,300 +467,35 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function fmtRelativeTime(timestamp) {
-  const ts = Number(timestamp);
-  if (!Number.isFinite(ts) || ts <= 0) {
-    return '';
-  }
-  const diff = Date.now() - ts;
-  if (diff <= 0) return 'just now';
-  const minutes = Math.round(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(diff / 3600000);
-  if (hours < 48) return `${hours}h ago`;
-  const days = Math.round(diff / 86400000);
-  return `${days}d ago`;
+function fmtHeroWinRate(win, games) {
+  if (!games) return '—';
+  return `${Math.round((win || 0) / games * 100)}% win`;
 }
 
-const abortError = () => {
-  const err = new Error('Comparison aborted');
-  err.name = 'AbortError';
-  return err;
-};
-
-async function findSimilarPro(playerId, onProgress, options = {}) {
-  const { signal } = options || {};
-  const progress = typeof onProgress === 'function' ? onProgress : () => {};
-  const notify = (stage, message) => {
-    if (signal?.aborted) return;
-    progress(stage, message);
-  };
-  if (signal?.aborted) {
-    throw abortError();
-  }
-  if (!SIMILAR_CACHE.has(playerId)) {
-    const stored = readCache(STORAGE_KEYS.similar(playerId), SIMILAR_CACHE_MAX_AGE);
-    if (stored && stored.value) {
-      SIMILAR_CACHE.set(playerId, stored.value);
-    }
-  }
-  if (SIMILAR_CACHE.has(playerId)) {
-    const cached = SIMILAR_CACHE.get(playerId);
-    if (cached && typeof cached.then === 'function') {
-      notify('cache', 'Reusing in-flight comparison…');
-      return cached;
-    }
-    notify('cache', 'Loaded previous comparison instantly.');
-    return cached;
-  }
-  const promise = (async () => {
-    if (signal?.aborted) {
-      throw abortError();
-    }
-    const player = PLAYER_MAP.get(playerId);
-    if (!player) {
-      notify('error', 'Player data missing. Please refresh and try again.');
-      return null;
-    }
-    notify('player', 'Analyzing your last 20 games…');
-    const playerTop = getPlayerRecentTopHeroes(player);
-    if (playerTop.length === 0) {
-      notify('player', 'No recent hero history available for this player yet.');
-      return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
-    }
-    notify('roster', `Fetching pro rosters from ${PRO_TEAM_WHITELIST.size} teams…`);
-    const roster = await fetchProRoster();
-    if (!roster.length) {
-      notify('roster', 'Unable to load tracked pro player data right now.');
-      return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
-    }
-    notify('evaluate', `Comparing against ${roster.length} pros (up to ${PRO_HERO_CONCURRENCY} at a time)…`);
-    const total = roster.length;
-    const limit = Math.min(PRO_HERO_CONCURRENCY, total) || 1;
-    let index = 0;
-    let processed = 0;
-    let skipped = 0;
-    let best = null;
-    notify('progress', `Compared 0/${total} pros…`);
-
-    async function worker() {
-      while (true) {
-        if (signal?.aborted) {
-          throw abortError();
-        }
-        const current = index++;
-        if (current >= total) {
-          break;
-        }
-        const pro = roster[current];
-        let heroList = [];
-        try {
-          heroList = await fetchProHeroStats(pro.account_id);
-        } catch (err) {
-          skipped += 1;
-          console.warn('Skipping pro comparison due to fetch failure', pro.account_id, err);
-        }
-        if (signal?.aborted) {
-          throw abortError();
-        }
-        if (heroList.length) {
-          const proTop = getTopHeroes(heroList, 10);
-          if (proTop.length) {
-            const overlap = computeSharedHeroes(playerTop, proTop);
-            if (overlap.score && (!best || overlap.score > best.overlap.score ||
-              (overlap.score === best.overlap.score && overlap.weight > best.overlap.weight))) {
-              best = { pro, overlap, proTop };
-            }
-          }
-        }
-        processed += 1;
-        notify('progress', `Compared ${processed}/${total} pros…`);
-      }
-    }
-
-    await Promise.all(Array.from({ length: limit }, () => worker()));
-    if (signal?.aborted) {
-      throw abortError();
-    }
-    if (skipped) {
-      notify('skipped', `Skipped ${skipped} pros because their hero pools were temporarily unavailable. They'll retry on the next search.`);
-    }
-    notify('done', 'Finished evaluating hero overlaps.');
-
-    if (!best) {
-      return { pro: null, overlap: { score: 0, weight: 0, shared: [] }, playerTop };
-    }
-    return { pro: best.pro, overlap: best.overlap, playerTop, proTop: best.proTop };
-  })();
-  SIMILAR_CACHE.set(playerId, promise);
-  try {
-    const resolved = await promise;
-    if (signal?.aborted) {
-      throw abortError();
-    }
-    SIMILAR_CACHE.set(playerId, resolved);
-    writeCache(STORAGE_KEYS.similar(playerId), resolved);
-    return resolved;
-  } catch (err) {
-    SIMILAR_CACHE.delete(playerId);
-    throw err;
-  }
-}
-
-function renderSimilarModal(playerId, result) {
-  const player = PLAYER_MAP.get(playerId);
-  const persona = player?.profile?.profile?.personaname || `Player ${playerId}`;
-  if (!result || !player) {
-    return {
-      title: `Similar pro for ${persona}`,
-      body: '<p class="small">Unable to gather enough data for this player right now.</p>'
-    };
-  }
-  const playerHeroes = result.playerTop?.map(h => heroName(h.hero_id)).join(', ');
-  if (!result.pro || !result.overlap?.score) {
-    return {
-      title: `Similar pro for ${persona}`,
-      body: `<div class="modal-section"><p>We couldn't find an overlapping hero specialist among the tracked teams for ${persona} yet.</p>${playerHeroes ? `<p class="small">Tracked heroes: ${playerHeroes}</p>` : ''}</div>`
-    };
-  }
-  const pro = result.pro;
-  const shared = result.overlap.shared.slice(0, 3);
-  const proName = pro.name || pro.personaname || 'Unknown Pro';
-  const team = (pro.team_name || '').trim();
-  const country = (pro.loccountrycode || '').trim();
-  const role = FANTASY_ROLES[pro.fantasy_role] || '';
-  const heroCards = shared.length ? shared.map(item => {
-    const hero = heroName(item.id);
-    const img = heroImg(item.id);
-    const playerWin = fmtHeroWinRate(item.player.win, item.player.games);
-    const proWin = fmtHeroWinRate(item.pro.win, item.pro.games);
-    return `
-      <div class="shared-card">
-        <img src="${img}" alt="${hero}">
-        <div class="shared-body">
-          <div class="title">${hero}</div>
-          <div class="metrics">${persona}: ${item.player.games} games • ${playerWin}<br>${proName}: ${item.pro.games} games • ${proWin}</div>
-        </div>
-      </div>
-    `;
-  }).join('') : '<div class="small">No overlapping heroes found.</div>';
-  const metaBits = [];
-  if (team) metaBits.push(team);
-  if (country) metaBits.push(`Country: ${country}`);
-  if (role) metaBits.push(`Role: ${role}`);
-  const meta = metaBits.join(' • ');
-  const playerTopList = result.playerTop
-    ? result.playerTop.slice(0, 6).map(h => heroName(h.hero_id)).join(', ')
-    : '';
-  const profileLink = `https://www.opendota.com/players/${pro.account_id}`;
-  const body = `
-    <div class="modal-section">
-      <div class="modal-pro">
-        <img src="${pro.avatarfull || pro.avatarmedium || ''}" alt="${proName}">
-        <div>
-          <h4>${proName}</h4>
-          <div class="modal-meta">${meta || 'No additional team info available'}</div>
-        </div>
-      </div>
-      <div class="modal-meta">Comparing against ${persona}'s most played heroes from the last 20 matches (${playerTopList || '—'}).</div>
-      <div class="modal-meta">Shared comfort picks (${shared.length} of your top 6 heroes overlap with the pro's top 10):</div>
-      <div class="shared-heroes">${heroCards}</div>
-      <div class="modal-meta"><a href="${profileLink}" target="_blank" rel="noopener">View ${proName}'s OpenDota profile →</a></div>
-    </div>
-  `;
-  return {
-    title: `Similar pro for ${persona}`,
-    body
-  };
-}
-
-function createModalProgressHandler() {
-  const summary = document.getElementById('similarSummary');
-  const log = document.getElementById('similarSteps');
-  const rows = new Map();
-  return (stage, message) => {
-    if (!message) return;
-    if (summary) {
-      summary.textContent = message;
-    }
-    if (!log) return;
-    const key = stage || `stage-${rows.size}`;
-    let row = rows.get(key);
-    if (!row) {
-      row = document.createElement('div');
-      row.className = 'modal-progress-row';
-      log.appendChild(row);
-      rows.set(key, row);
-    }
-    row.textContent = message;
-  };
-}
-
-async function showSimilarPro(playerId) {
-  const player = PLAYER_MAP.get(playerId);
-  const persona = player?.profile?.profile?.personaname || `Player ${playerId}`;
-  if (activeSimilarJob?.controller) {
-    activeSimilarJob.controller.abort();
-  }
-  const controller = new AbortController();
-  activeSimilarJob = { playerId, controller };
-  openModal(
-    `Finding similar pro for ${persona}…`,
-    `
-      <div class="modal-section modal-progress">
-        <div class="modal-progress-header">
-          <div id="similarSpinner" class="spinner"></div>
-          <div id="similarSummary" class="small">Preparing comparison…</div>
-        </div>
-        <div id="similarSteps" class="modal-progress-log"></div>
-      </div>
-    `
-  );
-  const updateProgress = createModalProgressHandler();
-  updateProgress('start', 'Preparing comparison…');
-  try {
-    const result = await findSimilarPro(playerId, (stage, message) => {
-      updateProgress(stage, message);
-    }, { signal: controller.signal });
-    if (controller.signal.aborted || activeSimilarJob?.controller !== controller) {
-      return;
-    }
-    const spinner = document.getElementById('similarSpinner');
-    if (spinner) {
-      spinner.remove();
-    }
-    updateProgress('done', 'Assembling comparison…');
-    if (controller.signal.aborted || activeSimilarJob?.controller !== controller) {
-      return;
-    }
-    const modalContent = renderSimilarModal(playerId, result);
-    openModal(modalContent.title, modalContent.body);
-  } catch (e) {
-    if (controller.signal.aborted || activeSimilarJob?.controller !== controller || e?.name === 'AbortError') {
-      return;
-    }
-    console.warn('showSimilarPro failed', playerId, e);
-    updateProgress('error', 'Failed to complete the comparison.');
-    const spinner = document.getElementById('similarSpinner');
-    if (spinner) {
-      spinner.remove();
-    }
-    openModal(`Similar pro for ${persona}`, '<p class="small">Something went wrong while searching for a comparable pro player. Please try again later.</p>');
-  } finally {
-    if (activeSimilarJob?.controller === controller) {
-      activeSimilarJob = null;
-    }
-  }
-}
-
-/* ---------- Render Facts ---------- */
 function renderFacts(players) {
   const factsList = document.getElementById('factsPlayers');
   if (!factsList) return;
-  const stats = players.map(p => {
-    const data = aggregateFacts(filterRealGames(p.matches), p.recent28);
-    return { ...data, player: p };
+  if (!players.length) {
+    factsList.innerHTML = '<div class="note">No player data available.</div>';
+    return;
+  }
+  const stats = players.map(player => {
+    const baseFacts = player.facts && typeof player.facts === 'object'
+      ? player.facts
+      : aggregateFacts(filterRealGames(player.matches || []), player.recent28 || []);
+    return {
+      wins: Number(baseFacts.wins) || 0,
+      total: Number(baseFacts.total) || 0,
+      winRate: Number(baseFacts.winRate) || 0,
+      kda: Number(baseFacts.kda) || 0,
+      gpm: Number(baseFacts.gpm) || 0,
+      xpm: Number(baseFacts.xpm) || 0,
+      avgPings: baseFacts.avgPings != null ? baseFacts.avgPings : null,
+      topHeroes: Array.isArray(baseFacts.topHeroes) ? baseFacts.topHeroes : [],
+      unique: Number(baseFacts.unique ?? baseFacts.uniqueHeroes ?? 0) || 0,
+      recentCount: Number(baseFacts.recentCount) || 0,
+      player
+    };
   });
   const metrics = {
     kda: s => s.kda,
@@ -1149,35 +509,35 @@ function renderFacts(players) {
   for (const [key, getter] of Object.entries(metrics)) {
     best[key] = Math.max(...stats.map(getter));
   }
-  const isBest = (stat, key) => {
-    const target = best[key];
-    return stat[key] !== undefined && Math.abs(stat[key] - target) < 0.0001;
-  };
   const markup = stats.map(stat => {
     const p = stat.player;
-    const persona = p.profile.profile?.personaname || 'Unknown';
+    const persona = p.profile?.profile?.personaname || 'Unknown';
     const total = stat.total;
     const losses = Math.max(0, total - stat.wins);
     const avgPing = stat.avgPings != null ? Math.round(stat.avgPings) : '—';
     const heroTags = stat.topHeroes.length
-      ? stat.topHeroes.map(h => `<span class="hero-tag" title="${heroName(h.id)}"><img src="${heroImg(h.id)}" alt="${heroName(h.id)}"><span>${h.count}</span></span>`).join('')
+      ? stat.topHeroes.map(h => `<span class="hero-tag" title="${escapeHtml(heroName(h.id))}"><img src="${heroImg(h.id)}" alt="${escapeHtml(heroName(h.id))}"><span>${h.count}</span></span>`).join('')
       : '<span class="small">No games</span>';
+    const isBest = (value, key) => {
+      const target = best[key];
+      return value !== undefined && Math.abs(value - target) < 0.0001;
+    };
     return `
       <div class="fact-card">
         <div class="fact-head">
           <div style="display:flex;align-items:center;gap:10px">
-            <img class="avatar" src="${p.profile.profile?.avatarfull || ''}" alt="${persona}">
-            <div><b>${persona}</b><div class="small">${stat.wins}/${losses} • ${fmtPct(stat.winRate)}</div></div>
+            <img class="avatar" src="${p.profile?.profile?.avatarfull || ''}" alt="${escapeHtml(persona)}">
+            <div><b>${escapeHtml(persona)}</b><div class="small">${stat.wins}/${losses} • ${fmtPct(stat.winRate)}</div></div>
           </div>
         </div>
         <div class="fact-grid">
-          <div class="fact-item ${isBest(stat, 'winRate') ? 'best' : ''}"><small>Win Rate</small><b>${fmtPct(stat.winRate)}</b></div>
-          <div class="fact-item ${isBest(stat, 'kda') ? 'best' : ''}"><small>KDA</small><b>${stat.kda.toFixed(1)}</b></div>
-          <div class="fact-item ${isBest(stat, 'gpm') ? 'best' : ''}"><small>GPM</small><b>${stat.gpm.toFixed(0)}</b></div>
-          <div class="fact-item ${isBest(stat, 'xpm') ? 'best' : ''}"><small>XPM</small><b>${stat.xpm.toFixed(0)}</b></div>
+          <div class="fact-item ${isBest(stat.winRate, 'winRate') ? 'best' : ''}"><small>Win Rate</small><b>${fmtPct(stat.winRate)}</b></div>
+          <div class="fact-item ${isBest(stat.kda, 'kda') ? 'best' : ''}"><small>KDA</small><b>${stat.kda.toFixed(1)}</b></div>
+          <div class="fact-item ${isBest(stat.gpm, 'gpm') ? 'best' : ''}"><small>GPM</small><b>${stat.gpm.toFixed(0)}</b></div>
+          <div class="fact-item ${isBest(stat.xpm, 'xpm') ? 'best' : ''}"><small>XPM</small><b>${stat.xpm.toFixed(0)}</b></div>
           <div class="fact-item"><small>Avg Pings</small><b>${avgPing}</b></div>
-          <div class="fact-item ${isBest(stat, 'unique') ? 'best' : ''}"><small>Unique Heroes</small><b>${stat.unique}</b></div>
-          <div class="fact-item ${isBest(stat, 'recentCount') ? 'best' : ''}"><small>Games (28d)</small><b>${stat.recentCount}</b></div>
+          <div class="fact-item ${isBest(stat.unique, 'unique') ? 'best' : ''}"><small>Unique Heroes</small><b>${stat.unique}</b></div>
+          <div class="fact-item ${isBest(stat.recentCount, 'recentCount') ? 'best' : ''}"><small>Games (28d)</small><b>${stat.recentCount}</b></div>
           <div class="fact-item"><small>Top Heroes</small><div class="hero-pair">${heroTags}</div></div>
         </div>
         <div class="fact-actions">
@@ -1196,23 +556,24 @@ function renderFacts(players) {
   });
 }
 
-/* ---------- Render Feed ---------- */
 function renderFeed(players) {
   const feed = document.getElementById('feed');
   if (!feed) return;
   feed.innerHTML = '';
   const groups = new Map();
-  for (const p of players) {
-    const validMatches = filterRealGames(p.matches);
-    for (const m of validMatches) {
-      const key = m.match_id;
+  for (const player of players) {
+    const validMatches = filterRealGames(player.matches || []);
+    for (const match of validMatches) {
+      const key = match.match_id;
       if (!groups.has(key)) {
-        groups.set(key, { match: m, players: [] });
+        groups.set(key, { match, players: [] });
       }
-      groups.get(key).players.push({ player: p, match: m });
+      groups.get(key).players.push({ player, match });
     }
   }
-  const posts = [...groups.values()].sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0)).slice(0, 30);
+  const posts = [...groups.values()]
+    .sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0))
+    .slice(0, FEED_POST_LIMIT);
   if (posts.length === 0) {
     feed.innerHTML = '<div class="note">No recent matches to display.</div>';
     return;
@@ -1222,14 +583,14 @@ function renderFeed(players) {
     const losses = group.players.length - wins;
     const mode = wins && losses ? 'mixed' : wins ? 'win' : 'lose';
     const badgeText = wins && losses ? 'MIXED' : wins ? 'WIN' : 'LOSS';
-    const personas = group.players.map(x => x.player.profile.profile?.personaname || 'Unknown');
-    const names = personas.map(name => `<span>${name}</span>`).join('');
+    const personas = group.players.map(x => x.player.profile?.profile?.personaname || 'Unknown');
+    const names = personas.map(name => `<span>${escapeHtml(name)}</span>`).join('');
     const avatarList = group.players.map(({ player }) => {
-      const persona = player.profile.profile?.personaname || 'Unknown';
-      return `<img src="${player.profile.profile?.avatarfull || ''}" alt="${persona}">`;
+      const persona = player.profile?.profile?.personaname || 'Unknown';
+      return `<img src="${player.profile?.profile?.avatarfull || ''}" alt="${escapeHtml(persona)}">`;
     }).join('');
     const playersMarkup = group.players.map(({ player, match }) => {
-      const persona = player.profile.profile?.personaname || 'Unknown';
+      const persona = player.profile?.profile?.personaname || 'Unknown';
       const hero = heroName(match.hero_id);
       const heroSrc = heroImg(match.hero_id);
       const level = formatMatchLevel(match);
@@ -1240,11 +601,11 @@ function renderFeed(players) {
         <div class="player-entry">
           <div class="player-main">
             <div class="player-text">
-              <div class="player-name">${persona}</div>
+              <div class="player-name">${escapeHtml(persona)}</div>
               <div class="player-hero">
-                <img src="${heroSrc}" alt="${hero}">
+                <img src="${heroSrc}" alt="${escapeHtml(hero)}">
                 <div class="hero-text">
-                  <div class="hero-name">${hero}</div>
+                  <div class="hero-name">${escapeHtml(hero)}</div>
                   <div class="hero-detail">Level ${level}</div>
                 </div>
               </div>
@@ -1285,7 +646,6 @@ function renderFeed(players) {
   }).join('');
 }
 
-/* ---------- Modal Helpers ---------- */
 function openModal(title, bodyHtml) {
   const backdrop = document.getElementById('modalBackdrop');
   const body = document.getElementById('modalBody');
@@ -1310,28 +670,70 @@ function closeModal() {
   }
 }
 
-/* ---------- Pro Meta Panel ---------- */
-function renderProMetaCard(runId, { subtitle, body, footer, footerTitle } = {}) {
-  if (runId !== proMetaRunCounter) return;
-  const container = document.getElementById(PRO_META_CARD_ID);
-  if (!container) return;
-  const subtitleMarkup = subtitle
-    ? `<div class="small">${escapeHtml(subtitle)}</div>`
-    : '<div class="small">Snapshot of pro pick &amp; ban trends.</div>';
-  const footerAttr = footerTitle ? ` title="${escapeHtml(footerTitle)}"` : '';
-  const footerMarkup = footer
-    ? `<div class="meta-updated"${footerAttr}>${escapeHtml(footer)}</div>`
-    : '';
-  container.innerHTML = `
-    <div class="fact-head">
-      <div>
-        <div class="meta-title">Tracked Pro Meta</div>
-        ${subtitleMarkup}
+function renderSimilarModal(player, similar) {
+  const persona = player?.profile?.profile?.personaname || `Player ${player?.id ?? ''}`;
+  if (!similar || !similar.pro) {
+    return {
+      title: `Similar pro for ${persona}`,
+      body: '<div class="modal-section"><p class="small">This data snapshot does not include a similar pro comparison yet.</p></div>'
+    };
+  }
+  const pro = similar.pro;
+  const overlap = similar.overlap || { shared: [] };
+  const shared = Array.isArray(overlap.shared) ? overlap.shared.slice(0, 3) : [];
+  const proName = pro.name || pro.personaname || 'Unknown Pro';
+  const team = (pro.team_name || '').trim();
+  const country = (pro.loccountrycode || '').trim();
+  const role = FANTASY_ROLES[pro.fantasy_role] || '';
+  const heroCards = shared.length ? shared.map(item => {
+    const hero = heroName(item.id);
+    const img = heroImg(item.id);
+    const playerWin = fmtHeroWinRate(item.player?.win, item.player?.games);
+    const proWin = fmtHeroWinRate(item.pro?.win, item.pro?.games);
+    return `
+      <div class="shared-card">
+        <img src="${img}" alt="${escapeHtml(hero)}">
+        <div class="shared-body">
+          <div class="title">${escapeHtml(hero)}</div>
+          <div class="metrics">${escapeHtml(persona)}: ${item.player?.games ?? 0} games • ${playerWin}<br>${escapeHtml(proName)}: ${item.pro?.games ?? 0} games • ${proWin}</div>
+        </div>
+      </div>`;
+  }).join('') : '<div class="small">No overlapping heroes found.</div>';
+  const metaBits = [];
+  if (team) metaBits.push(team);
+  if (country) metaBits.push(`Country: ${country}`);
+  if (role) metaBits.push(`Role: ${role}`);
+  const meta = metaBits.join(' • ');
+  const playerTopList = Array.isArray(similar.playerTop) ? similar.playerTop.slice(0, 6).map(h => heroName(h.hero_id)).join(', ') : '';
+  const profileLink = `https://www.opendota.com/players/${pro.account_id}`;
+  const body = `
+    <div class="modal-section">
+      <div class="modal-pro">
+        <img src="${pro.avatarfull || pro.avatarmedium || ''}" alt="${escapeHtml(proName)}">
+        <div>
+          <h4>${escapeHtml(proName)}</h4>
+          <div class="modal-meta">${meta ? escapeHtml(meta) : 'No additional team info available'}</div>
+        </div>
       </div>
-    </div>
-    ${body || '<div class="meta-message">No pro meta data to display right now.</div>'}
-    ${footerMarkup}
-  `;
+      <div class="modal-meta">Comparing against ${escapeHtml(persona)}'s most played heroes from the last 20 matches (${playerTopList || '—'}).</div>
+      <div class="modal-meta">Shared comfort picks (${shared.length} of your top heroes overlap with the pro's top choices):</div>
+      <div class="shared-heroes">${heroCards}</div>
+      <div class="modal-meta"><a href="${profileLink}" target="_blank" rel="noopener">View ${escapeHtml(proName)}'s OpenDota profile →</a></div>
+    </div>`;
+  return {
+    title: `Similar pro for ${persona}`,
+    body
+  };
+}
+
+function showSimilarPro(playerId) {
+  const player = PLAYER_MAP.get(playerId);
+  if (!player) {
+    openModal('Similar pro', '<div class="modal-section"><p class="small">Player data is unavailable.</p></div>');
+    return;
+  }
+  const modal = renderSimilarModal(player, player.similar);
+  openModal(modal.title, modal.body);
 }
 
 function buildProMetaSnapshot(heroStats) {
@@ -1351,18 +753,7 @@ function buildProMetaSnapshot(heroStats) {
       pro_win: wins
     };
   }).filter(Boolean).sort((a, b) => (b.contested || 0) - (a.contested || 0));
-  return { heroes: entries.slice(0, 30) };
-}
-
-function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.now() } = {}) {
-  if (!snapshot || !Array.isArray(snapshot.heroes) || snapshot.heroes.length === 0) {
-    return {
-      subtitle: cached ? 'Cached snapshot unavailable.' : 'Unable to load pro picks & bans.',
-      body: '<div class="meta-message">No contested heroes to display right now.</div>',
-      footer: 'Cached for up to 48h • Source: OpenDota heroStats'
-    };
-  }
-  const heroes = snapshot.heroes;
+  const heroes = entries.slice(0, 30);
   const highlight = heroes
     .filter(entry => (entry.pro_pick || 0) >= 15)
     .sort((a, b) => {
@@ -1370,6 +761,43 @@ function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.no
       const winB = (b.pro_pick || 0) ? (b.pro_win || 0) / b.pro_pick : 0;
       return winB - winA;
     })[0] || heroes.find(entry => (entry.pro_pick || 0) > 0) || null;
+  const contestedTotal = heroes.reduce((sum, entry) => sum + (entry.contested || 0), 0);
+  const pickTotal = heroes.reduce((sum, entry) => sum + (entry.pro_pick || 0), 0);
+  const banTotal = heroes.reduce((sum, entry) => sum + (entry.pro_ban || 0), 0);
+  return {
+    timestamp: Date.now(),
+    heroes,
+    highlight: highlight
+      ? {
+          hero_id: highlight.hero_id,
+          pro_pick: highlight.pro_pick,
+          pro_win: highlight.pro_win,
+          winRate: highlight.pro_pick ? highlight.pro_win / highlight.pro_pick : 0
+        }
+      : null,
+    summary: { contestedTotal, pickTotal, banTotal }
+  };
+}
+
+function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.now() } = {}) {
+  const heroes = Array.isArray(snapshot?.heroes) ? snapshot.heroes : [];
+  if (!heroes.length) {
+    return {
+      subtitle: cached ? 'Cached snapshot unavailable.' : 'Unable to load pro picks & bans.',
+      body: '<div class="meta-message">No contested heroes to display right now.</div>',
+      footer: 'Snapshot sourced from OpenDota heroStats'
+    };
+  }
+  const highlight = snapshot.highlight || (heroes
+    .filter(entry => (entry.pro_pick || 0) >= 15)
+    .sort((a, b) => {
+      const winA = (a.pro_pick || 0) ? (a.pro_win || 0) / a.pro_pick : 0;
+      const winB = (b.pro_pick || 0) ? (b.pro_win || 0) / b.pro_pick : 0;
+      return winB - winA;
+    })[0] || heroes.find(entry => (entry.pro_pick || 0) > 0) || null);
+  const contestedTotal = snapshot.summary?.contestedTotal ?? heroes.reduce((sum, entry) => sum + (entry.contested || 0), 0);
+  const pickTotal = snapshot.summary?.pickTotal ?? heroes.reduce((sum, entry) => sum + (entry.pro_pick || 0), 0);
+  const banTotal = snapshot.summary?.banTotal ?? heroes.reduce((sum, entry) => sum + (entry.pro_ban || 0), 0);
   const heroListHtml = heroes.map((entry, idx) => {
     const winRate = (entry.pro_pick || 0) ? (entry.pro_win || 0) / entry.pro_pick : 0;
     const contestedLabel = `${entry.contested.toLocaleString()} contested`;
@@ -1378,32 +806,27 @@ function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.no
     const metrics = (entry.pro_pick || 0)
       ? `${contestedLabel} • ${pickLabel} • ${banLabel} • ${fmtPct(winRate)} win`
       : `${contestedLabel} • ${banLabel} • No pro picks`;
-    const heroLabel = escapeHtml(heroName(entry.hero_id));
+    const heroLabel = heroName(entry.hero_id);
     return `
       <div class="meta-hero">
         <div class="meta-rank">#${idx + 1}</div>
-        <img src="${heroImg(entry.hero_id)}" alt="${heroLabel}">
+        <img src="${heroImg(entry.hero_id)}" alt="${escapeHtml(heroLabel)}">
         <div class="meta-body">
-          <div class="meta-name">${heroLabel}</div>
+          <div class="meta-name">${escapeHtml(heroLabel)}</div>
           <div class="meta-metrics">${escapeHtml(metrics)}</div>
         </div>
-      </div>
-    `;
+      </div>`;
   }).join('');
   const highlightHtml = highlight ? (() => {
-    const winRate = (highlight.pro_pick || 0) ? (highlight.pro_win || 0) / highlight.pro_pick : 0;
+    const winRate = highlight.winRate ?? ((highlight.pro_pick || 0) ? (highlight.pro_win || 0) / highlight.pro_pick : 0);
     const pickLabel = highlight.pro_pick ? `${highlight.pro_pick.toLocaleString()} picks` : 'no recorded picks';
     return `
       <div class="meta-highlight">
         <span>Most successful contested hero</span>
         <b>${escapeHtml(heroName(highlight.hero_id))}</b>
         ${escapeHtml(`${fmtPct(winRate)} across ${pickLabel}`)}
-      </div>
-    `;
+      </div>`;
   })() : '';
-  const contestedTotal = heroes.reduce((sum, entry) => sum + (entry.contested || 0), 0);
-  const pickTotal = heroes.reduce((sum, entry) => sum + (entry.pro_pick || 0), 0);
-  const banTotal = heroes.reduce((sum, entry) => sum + (entry.pro_ban || 0), 0);
   const summaryBits = [
     `Top ${heroes.length} contested heroes`,
     `${contestedTotal.toLocaleString()} contested`,
@@ -1415,7 +838,7 @@ function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.no
   if (Number.isFinite(timestamp)) {
     subtitleBits.push(`${cached ? 'cached' : 'updated'} ${fmtRelativeTime(timestamp)}`);
   }
-  const footerBits = ['Cached for up to 48h', 'Source: OpenDota heroStats'];
+  const footerBits = ['Snapshot sourced from OpenDota heroStats'];
   if (Number.isFinite(timestamp)) {
     footerBits.push(`${cached ? 'Cached' : 'Updated'} ${fmtRelativeTime(timestamp)}`);
   }
@@ -1427,242 +850,87 @@ function describeProMetaSnapshot(snapshot, { cached = false, timestamp = Date.no
   };
 }
 
-async function loadProMetaPanel() {
+function renderProMeta(snapshot) {
   const container = document.getElementById(PRO_META_CARD_ID);
   if (!container) return;
-  const runId = ++proMetaRunCounter;
-  const cachedSnapshot = (() => {
-    try {
-      const cached = readCache(STORAGE_KEYS.proMeta, PRO_CACHE_MAX_AGE);
-      if (cached && cached.value && Array.isArray(cached.value.heroes)) {
-        return { value: cached.value, timestamp: cached.timestamp };
-      }
-    } catch (err) {
-      console.warn('Failed to inspect cached pro meta snapshot', err);
-    }
-    return null;
-  })();
-  const hadCached = Boolean(cachedSnapshot);
-  if (hadCached) {
-    renderProMetaCard(runId, describeProMetaSnapshot(cachedSnapshot.value, {
-      cached: true,
-      timestamp: cachedSnapshot.timestamp
-    }));
-  } else if (!playersLoaded) {
-    renderProMetaCard(runId, {
-      subtitle: 'Waiting for player data…',
-      body: '<div class="meta-message">Player info is loading. Pro meta will refresh once that finishes.</div>',
-      footer: 'Cached for up to 48h • Source: OpenDota heroStats'
-    });
-  } else {
-    renderProMetaCard(runId, {
-      subtitle: 'Loading pro pick & ban snapshot…',
-      body: '<div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading pro pick &amp; ban trends…</span></div>',
-      footer: 'Cached for up to 48h • Source: OpenDota heroStats'
-    });
-  }
-  if (!playersLoaded) {
-    await ensurePlayersReady();
-    if (runId !== proMetaRunCounter) {
-      return;
-    }
-  }
-  if (!hadCached) {
-    renderProMetaCard(runId, {
-      subtitle: 'Loading pro pick & ban snapshot…',
-      body: '<div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading pro pick &amp; ban trends…</span></div>',
-      footer: 'Cached for up to 48h • Source: OpenDota heroStats'
-    });
-  }
-  try {
-    const heroStats = await ensureHeroStats();
-    if (runId !== proMetaRunCounter) {
-      return;
-    }
-    if (!Array.isArray(heroStats) || heroStats.length === 0) {
-      if (!hadCached) {
-        renderProMetaCard(runId, {
-          subtitle: 'Unable to load pro picks & bans.',
-          body: '<div class="meta-message error">Failed to retrieve pro hero statistics.</div>',
-          footer: 'Cached for up to 48h • Source: OpenDota heroStats'
-        });
-      }
-      return;
-    }
-    const snapshot = buildProMetaSnapshot(heroStats);
-    const view = describeProMetaSnapshot(snapshot, { cached: false, timestamp: Date.now() });
-    renderProMetaCard(runId, view);
-    writeCache(STORAGE_KEYS.proMeta, snapshot);
-  } catch (err) {
-    console.warn('Pro meta panel failed', err);
-    if (!hadCached) {
-      renderProMetaCard(runId, {
-        subtitle: 'Unable to load pro picks & bans.',
-        body: '<div class="meta-message error">Failed to load pro meta data. Please try again later.</div>',
-        footer: 'Cached for up to 48h • Source: OpenDota heroStats'
-      });
-    }
-  }
+  const source = snapshot?.proMeta;
+  const hasSnapshot = source && Array.isArray(source.heroes) && source.heroes.length;
+  const metaSnapshot = hasSnapshot ? source : buildProMetaSnapshot(snapshot.heroStats || []);
+  const view = describeProMetaSnapshot(metaSnapshot, {
+    cached: Boolean(source?.timestamp),
+    timestamp: source?.timestamp ?? snapshot.lastUpdated ?? Date.now()
+  });
+  const subtitleMarkup = view.subtitle ? `<div class="small">${escapeHtml(view.subtitle)}</div>` : '<div class="small">Snapshot of pro pick &amp; ban trends.</div>';
+  const footerAttr = view.footerTitle ? ` title="${escapeHtml(view.footerTitle)}"` : '';
+  const footerMarkup = view.footer ? `<div class="meta-updated"${footerAttr}>${escapeHtml(view.footer)}</div>` : '';
+  container.innerHTML = `
+    <div class="fact-head">
+      <div>
+        <div class="meta-title">Tracked Pro Meta</div>
+        ${subtitleMarkup}
+      </div>
+    </div>
+    ${view.body || '<div class="meta-message">No pro meta data to display right now.</div>'}
+    ${footerMarkup}
+  `;
 }
 
-/* ---------- Bootstrap ---------- */
-async function bootstrap() {
-  beginPlayerLoad();
+async function bootstrap({ force = false } = {}) {
   resetStatus();
-  const startStep = statusStep('Starting refresh…');
   const feedEl = document.getElementById('feed');
   const factsListEl = document.getElementById('factsPlayers');
-  if (feedEl) { feedEl.innerHTML = '<div class="post-header"><div class="spinner"></div><span class="small"> Loading…</span></div>'; }
+  if (feedEl) {
+    feedEl.innerHTML = '<div class="post-header"><div class="spinner"></div><span class="small"> Loading…</span></div>';
+  }
   if (factsListEl) {
     factsListEl.innerHTML = '<div class="fact-card"><div class="meta-loading"><div class="spinner tiny"></div><span class="small">Loading player highlights…</span></div></div>';
   }
-  loadProMetaPanel();
-  startStep.update('success', 'Refresh started.');
-
+  const step = statusStep('Loading data snapshot…');
+  const previous = SNAPSHOT;
   try {
-    const heroStep = statusStep('Fetching hero stats from OpenDota…');
-    try {
-      const heroList = await ensureHeroStats();
-      heroStep.update('success', `Loaded ${heroList.length} hero definitions.`);
-    } catch (e) {
-      console.warn('heroStats failed', e);
-      heroStep.update('error', 'Failed to load hero stats (continuing without updates).');
-    }
-
-    const playerDataById = new Map();
-    PLAYER_MAP.clear();
-    const cacheStep = statusStep('Checking cached player data…');
-    let cachedCount = 0;
-    IDS.forEach(id => {
-      const cached = readCache(STORAGE_KEYS.player(id), PLAYER_CACHE_MAX_AGE);
-      if (!cached) return;
-      const normalized = normalizePlayerCacheValue(cached.value);
-      if (!normalized) {
-        removeCache(STORAGE_KEYS.player(id));
-        removeCache(STORAGE_KEYS.similar(id));
-        return;
-      }
-      const record = { id, ...normalized };
-      playerDataById.set(id, record);
-      PLAYER_MAP.set(id, record);
-      cachedCount += 1;
-    });
-    if (cachedCount) {
-      cacheStep.update('success', `Loaded ${cachedCount} cached players.`);
-      const warmPlayers = orderedPlayersById(playerDataById);
-      if (warmPlayers.length) {
-        renderFacts(warmPlayers);
-        renderFeed(warmPlayers);
-      }
+    const snapshot = await ensureSnapshot({ force });
+    const timestamp = snapshot.lastUpdated;
+    if (timestamp) {
+      step.update('success', `Loaded snapshot updated ${fmtRelativeTime(timestamp)}.`);
     } else {
-      cacheStep.update('success', 'No cached player data available.');
+      step.update('success', 'Loaded snapshot successfully.');
     }
-
-    let pointer = 0;
-
-    async function loadPlayerBatch() {
-      while (pointer < IDS.length) {
-        const id = IDS[pointer++];
-        const cachedRecord = playerDataById.get(id);
-        const cachedPersona = cachedRecord?.profile?.profile?.personaname;
-        let checkStep = null;
-        let shouldRefresh = true;
-        if (cachedRecord) {
-          const personaLabel = cachedPersona || `Player ${id}`;
-          checkStep = statusStep(`Checking latest matches for ${personaLabel}…`);
-          try {
-            const latest = await API.latest(id);
-            const cachedLatest = latestComparableMatch(cachedRecord.matches);
-            const newest = latestComparableMatch(latest);
-            if (!newest && !cachedLatest) {
-              checkStep.update('success', `No recent matches yet for ${personaLabel}. Using cache.`);
-              shouldRefresh = false;
-            } else if (!newest && cachedLatest) {
-              checkStep.update('success', `No new matches for ${personaLabel}. Using cache.`);
-              shouldRefresh = false;
-            } else if (sameMatch(cachedLatest, newest)) {
-              checkStep.update('success', `No new matches for ${personaLabel}. Using cache.`);
-              shouldRefresh = false;
-            } else if (newest) {
-              checkStep.update('pending', `New matches detected for ${personaLabel}. Refreshing…`);
-            }
-          } catch (err) {
-            console.warn('Latest match check failed', id, err);
-            if (checkStep) {
-              checkStep.update('pending', `Refreshing ${personaLabel} (latest check unavailable)…`);
-            }
-            shouldRefresh = true;
-          }
-          if (!shouldRefresh) {
-            continue;
-          }
-        }
-        const initialLabel = cachedPersona ? `${cachedPersona}` : `player ${id}`;
-        const playerStep = statusStep(`Connecting to OpenDota for ${initialLabel}…`);
-        let profile;
-        try {
-          profile = await API.profile(id);
-          const persona = profile.profile?.personaname || `Player ${id}`;
-          if (cachedRecord) {
-            playerStep.update('pending', `Refreshing data for ${persona}…`);
-          } else {
-            playerStep.update('pending', `Profile loaded for ${persona}. Fetching recent history…`);
-          }
-          const [matches, recent28] = await Promise.all([
-            API.recent(id),
-            API.recent28(id)
-          ]);
-          const record = { id, profile, matches, recent28 };
-          playerDataById.set(id, record);
-          PLAYER_MAP.set(id, record);
-          SIMILAR_CACHE.delete(id);
-          removeCache(STORAGE_KEYS.similar(id));
-          writePlayerCache(id, record);
-          playerStep.update('success', `Finished loading data for ${persona}.`);
-          if (checkStep) {
-            checkStep.update('success', `Updated recent matches for ${persona}.`);
-          }
-        } catch (e) {
-          const persona = profile?.profile?.personaname || cachedPersona || `Player ${id}`;
-          playerStep.update('error', `Failed while loading data for ${persona}.`);
-          console.warn('player failed', id, e);
-          if (checkStep) {
-            checkStep.update('error', `Failed to refresh ${persona}.`);
-          }
-          if (!cachedRecord) {
-            PLAYER_MAP.delete(id);
-            playerDataById.delete(id);
-            SIMILAR_CACHE.delete(id);
-            removeCache(STORAGE_KEYS.similar(id));
-          }
-          await delay(RATE_DELAY_429);
-        }
+    renderFacts(snapshot.players || []);
+    renderFeed(snapshot.players || []);
+    renderProMeta(snapshot);
+    collapseStatusPanel();
+  } catch (err) {
+    console.warn('Failed to load snapshot', err);
+    if (previous) {
+      step.update('error', 'Failed to refresh snapshot. Showing last loaded data.');
+      renderFacts(previous.players || []);
+      renderFeed(previous.players || []);
+      renderProMeta(previous);
+    } else {
+      step.update('error', 'Failed to load data snapshot.');
+      if (factsListEl) {
+        factsListEl.innerHTML = '<div class="note">Failed to load player data.</div>';
+      }
+      if (feedEl) {
+        feedEl.innerHTML = '<div class="note">Failed to load feed.</div>';
+      }
+      const proMetaCard = document.getElementById(PRO_META_CARD_ID);
+      if (proMetaCard) {
+        proMetaCard.innerHTML = `
+          <div class="fact-head">
+            <div>
+              <div class="meta-title">Tracked Pro Meta</div>
+              <div class="small">Snapshot unavailable.</div>
+            </div>
+          </div>
+          <div class="meta-message error">Unable to load pro meta data.</div>
+        `;
       }
     }
-
-    await Promise.all(Array.from({ length: Math.min(PLAYER_CONCURRENCY, IDS.length) }, () => loadPlayerBatch()));
-    const players = orderedPlayersById(playerDataById);
-    markPlayersReady();
-
-    if (players.length === 0) {
-      const failStep = statusStep('Finalizing…');
-      failStep.update('error', 'Unable to load any player data from OpenDota.');
-      if (factsListEl) { factsListEl.innerHTML = '<div class="note">Failed to load any player data.</div>'; }
-      if (feedEl) { feedEl.innerHTML = '<div class="note">Failed to load feed.</div>'; }
-      return;
-    }
-
-    const renderStep = statusStep('Rendering results…');
-    renderFacts(players);
-    renderFeed(players);
-    renderStep.update('success', 'Feed updated successfully.');
-    collapseStatusPanel();
-  } finally {
-    markPlayersReady();
   }
 }
 
-document.getElementById('refreshBtn').addEventListener('click', bootstrap);
+document.getElementById('refreshBtn').addEventListener('click', () => bootstrap({ force: true }));
 const modalBackdrop = document.getElementById('modalBackdrop');
 if (modalBackdrop) {
   modalBackdrop.addEventListener('click', event => {
