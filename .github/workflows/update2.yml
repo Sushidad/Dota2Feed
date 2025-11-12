@@ -1,14 +1,18 @@
+# .github/workflows/update.yml
 name: Update data.json
 on:
   schedule:
-    - cron: "0 */6 * * *"  # every 6 hours
-  workflow_dispatch: {}     # manual trigger
+    - cron: "0 */6 * * *"     # every 6 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # allow committing
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: true
@@ -18,16 +22,13 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies
-        run: npm install node-fetch@3
-
-      - name: Run data fetcher
+      - name: Run fetcher
         run: node data-fetcher.js
 
-      - name: Commit and push updated data.json
+      - name: Commit updated data.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data.json
-          git commit -m "Auto-update data.json [skip ci]" || echo "No changes to commit"
+          git commit -m "Auto-update data.json [skip ci]" || echo "No changes"
           git push
