@@ -234,6 +234,25 @@ function buildProMetaSnapshot(heroStats) {
   const started = Date.now();
   let apiCalls = 0;
 
+  let previous = null;
+  try {
+    if (fs.existsSync(OUT)) {
+      previous = JSON.parse(fs.readFileSync(OUT, "utf8"));
+    }
+  } catch (err) {
+    console.warn(`⚠️  Failed to read existing data.json: ${err.message}`);
+    previous = null;
+  }
+
+  const previousPlayers = new Map();
+  if (previous && Array.isArray(previous.players)) {
+    for (const player of previous.players) {
+      if (player && Number.isFinite(player.id)) {
+        previousPlayers.set(Number(player.id), player);
+      }
+    }
+  }
+
   const out = {
     lastUpdated: Date.now(),
     players: [],
@@ -246,46 +265,94 @@ function buildProMetaSnapshot(heroStats) {
 
   // heroStats first (used both directly and for proMeta)
   console.log("Fetching heroStats…");
-  const heroStats = await API.heroes().catch((e) => {
+  let heroStats = null;
+  try {
+    heroStats = await API.heroes();
+  } catch (e) {
     console.warn("heroStats failed:", e.message);
-    return [];
-  });
+  }
   apiCalls += 1;
-  out.heroStats = Array.isArray(heroStats) ? heroStats : [];
+  if (!Array.isArray(heroStats)) {
+    if (Array.isArray(previous?.heroStats)) {
+      console.warn("Using previous heroStats due to fetch failure.");
+      heroStats = previous.heroStats;
+    } else {
+      heroStats = [];
+    }
+  }
+  out.heroStats = heroStats;
 
   // players
   const skippedPlayers = [];
   for (const id of IDS) {
     console.log(`Fetching player ${id}…`);
-    const profile = await API.profile(id).catch((err) => {
+    const prevPlayer = previousPlayers.get(id) || null;
+    let profile = null;
+    try {
+      profile = await API.profile(id);
+    } catch (err) {
       console.warn(`[player ${id}] profile fetch failed: ${err.message}`);
-      return null;
-    });
+    }
     await sleep(RATE_DELAY_OK);
-    const matches =
-      (await API.recent(id).catch((err) => {
-        console.warn(`[player ${id}] recent matches failed: ${err.message}`);
-        return null;
-      })) || [];
+    let matches = null;
+    try {
+      matches = await API.recent(id);
+    } catch (err) {
+      console.warn(`[player ${id}] recent matches failed: ${err.message}`);
+    }
     await sleep(RATE_DELAY_OK);
-    const recent28 =
-      (await API.recent28(id).catch((err) => {
-        console.warn(`[player ${id}] last-28d matches failed: ${err.message}`);
-        return null;
-      })) || [];
+    let recent28 = null;
+    try {
+      recent28 = await API.recent28(id);
+    } catch (err) {
+      console.warn(`[player ${id}] last-28d matches failed: ${err.message}`);
+    }
     await sleep(RATE_DELAY_OK);
-    const heroesAllTime =
-      (await API.heroesAllTime(id).catch((err) => {
-        console.warn(`[player ${id}] heroes (all time) failed: ${err.message}`);
-        return null;
-      })) || [];
+    let heroesAllTime = null;
+    try {
+      heroesAllTime = await API.heroesAllTime(id);
+    } catch (err) {
+      console.warn(`[player ${id}] heroes (all time) failed: ${err.message}`);
+    }
     await sleep(RATE_DELAY_OK);
     apiCalls += 4;
 
     if (!profile) {
-      console.warn(`Skipping ${id}: profile not found or 404`);
-      skippedPlayers.push(id);
-      continue;
+      if (prevPlayer?.profile) {
+        console.warn(`[player ${id}] using previous profile due to fetch failure.`);
+        profile = prevPlayer.profile;
+      } else {
+        console.warn(`Skipping ${id}: profile not found or 404`);
+        skippedPlayers.push(id);
+        continue;
+      }
+    }
+
+    if (!Array.isArray(matches)) {
+      if (Array.isArray(prevPlayer?.matches)) {
+        console.warn(`[player ${id}] using previous recent matches due to fetch failure.`);
+        matches = prevPlayer.matches;
+      } else {
+        matches = [];
+      }
+    }
+
+    if (!Array.isArray(recent28)) {
+      if (Array.isArray(prevPlayer?.recent28)) {
+        console.warn(`[player ${id}] using previous last-28d matches due to fetch failure.`);
+        recent28 = prevPlayer.recent28;
+      } else {
+        recent28 = [];
+      }
+    }
+
+    if (!Array.isArray(heroesAllTime)) {
+      if (Array.isArray(prevPlayer?.heroesAllTime)) {
+        console.warn(`[player ${id}] using previous heroes (all time) due to fetch failure.`);
+        heroesAllTime = prevPlayer.heroesAllTime;
+      } else {
+        heroesAllTime = [];
+      }
     }
 
     const facts = buildFacts(matches, recent28);
