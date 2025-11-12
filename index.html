@@ -65,7 +65,14 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .facts { display: flex; flex-direction: column; gap: 14px; }
 .fact-card { border: 1px solid #1f2937; border-radius: 16px; padding: 12px; background: linear-gradient(180deg, rgba(255, 255, 255, .03), rgba(0, 0, 0, 0)); }
 .fact-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; }
-.fact-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.fact-footer { margin-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+.fact-actions { display: flex; justify-content: flex-end; margin-top: 0; }
+.meta-matches { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 12px; background: #0c1422; border: 1px solid #1f2937; }
+.meta-matches-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.meta-matches-heroes { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.meta-match-hero { width: 48px; height: 28px; border-radius: 10px; overflow: hidden; border: 1px solid #1f2937; background: #111827; box-shadow: 0 6px 14px rgba(0, 0, 0, .35); }
+.meta-match-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.meta-matches-empty { font-size: 12px; color: var(--muted); }
 .meta-card { background: linear-gradient(180deg, rgba(147, 51, 234, .12), rgba(12, 20, 34, .7)); border-color: rgba(147, 51, 234, .35); }
 .meta-title { font-weight: 700; font-size: 15px; color: var(--meta); }
 .meta-loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 16px 0; color: var(--muted); font-size: 13px; }
@@ -494,6 +501,7 @@ function renderFacts(players) {
       topHeroes: Array.isArray(baseFacts.topHeroes) ? baseFacts.topHeroes : [],
       unique: Number(baseFacts.unique ?? baseFacts.uniqueHeroes ?? 0) || 0,
       recentCount: Number(baseFacts.recentCount) || 0,
+      metaMatches: Array.isArray(player.metaMatches) ? player.metaMatches : [],
       player
     };
   });
@@ -518,6 +526,24 @@ function renderFacts(players) {
     const heroTags = stat.topHeroes.length
       ? stat.topHeroes.map(h => `<span class="hero-tag" title="${escapeHtml(heroName(h.id))}"><img src="${heroImg(h.id)}" alt="${escapeHtml(heroName(h.id))}"><span>${h.count}</span></span>`).join('')
       : '<span class="small">No games</span>';
+    const metaMatches = Array.isArray(stat.metaMatches) ? stat.metaMatches.slice(0, 3) : [];
+    const metaMatchesMarkup = (() => {
+      if (!metaMatches.length) {
+        return '<span class="meta-matches-empty">No current overlaps</span>';
+      }
+      const items = metaMatches
+        .map(hero => {
+          const heroId = Number(hero.hero_id ?? hero.id);
+          if (!Number.isFinite(heroId)) return '';
+          const games = Number(hero.games) || 0;
+          const wins = Number(hero.win) || 0;
+          const tooltip = `${heroName(heroId)} • ${wins}/${games} wins all-time`;
+          return `<div class="meta-match-hero" title="${escapeHtml(tooltip)}"><img src="${heroImg(heroId)}" alt="${escapeHtml(heroName(heroId))}"></div>`;
+        })
+        .filter(Boolean)
+        .join('');
+      return items || '<span class="meta-matches-empty">No current overlaps</span>';
+    })();
     const isBest = (value, key) => {
       const target = best[key];
       return value !== undefined && Math.abs(value - target) < 0.0001;
@@ -540,8 +566,14 @@ function renderFacts(players) {
           <div class="fact-item ${isBest(stat.recentCount, 'recentCount') ? 'best' : ''}"><small>Games (28d)</small><b>${stat.recentCount}</b></div>
           <div class="fact-item"><small>Top Heroes</small><div class="hero-pair">${heroTags}</div></div>
         </div>
-        <div class="fact-actions">
-          <button class="btn small" data-similar="${p.id}">Find similar pro</button>
+        <div class="fact-footer">
+          <div class="meta-matches">
+            <div class="meta-matches-title">Meta matches</div>
+            <div class="meta-matches-heroes">${metaMatchesMarkup}</div>
+          </div>
+          <div class="fact-actions">
+            <button class="btn small" data-similar="${p.id}">Find similar pro</button>
+          </div>
         </div>
       </div>`;
   }).join('');

@@ -2491,7 +2491,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     },
     {
       "id": 50423134,
@@ -3855,7 +3857,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     },
     {
       "id": 53635813,
@@ -5369,7 +5373,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     },
     {
       "id": 86890516,
@@ -7009,7 +7015,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     },
     {
       "id": 26467713,
@@ -8583,7 +8591,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     },
     {
       "id": 81305221,
@@ -10517,7 +10527,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     },
     {
       "id": 27081071,
@@ -11581,7 +11593,9 @@
         },
         "playerTop": [],
         "proTop": []
-      }
+      },
+      "heroesAllTime": [],
+      "metaMatches": []
     }
   ],
   "heroStats": [
