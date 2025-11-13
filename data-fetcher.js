@@ -30,7 +30,7 @@ const API = {
   heroesAllTime: (id) => j(`${BASE}/players/${id}/heroes`)
 };
 
-const BASE = "https://api.opendota.com/api";
+const BASE = "https://www.opendota.com/api";
 const OUT = path.resolve("./data.json");
 
 // ---------- tiny throttle ----------
