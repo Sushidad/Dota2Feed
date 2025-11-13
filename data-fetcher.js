@@ -187,13 +187,21 @@ function buildRecentHeroStats(matches, limit = 20) {
 
 function buildProMetaSnapshot(heroStats) {
   const heroes = (heroStats || [])
-    .map((h) => {
-      const id = Number(h.id);
-      const immortal_pick = Number(h["8_pick"]) || 0;
-      const immortal_win = Number(h["8_win"]) || 0;
-      if (!Number.isFinite(id) || immortal_pick <= 0) return null;
-      return { hero_id: id, immortal_pick, immortal_win, source: "immortal" };
-    })
+  .map((h) => {
+    const id = Number(h.id);
+
+    const immortal_pick =
+      (Number(h["8_pick"]) || 0) +
+      (Number(h["7_pick"]) || 0);
+
+    const immortal_win =
+      (Number(h["8_win"]) || 0) +
+      (Number(h["7_win"]) || 0);
+
+    if (!Number.isFinite(id) || immortal_pick <= 0) return null;
+
+    return { hero_id: id, immortal_pick, immortal_win, source: "immortal+divine" };
+  });
     .filter(Boolean)
     .sort((a, b) => (b.immortal_pick || 0) - (a.immortal_pick || 0))
     .slice(0, 30);
