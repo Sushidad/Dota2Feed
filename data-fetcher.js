@@ -366,7 +366,7 @@ function buildProMetaSnapshot(heroStats) {
       ? heroesAllTime
           .slice()
           .sort((a, b) => (Number(b.games) || 0) - (Number(a.games) || 0))
-          .slice(0, 10)
+          .slice(0, 20)
           .map((hero) => ({
             hero_id: Number(hero.hero_id),
             games: Number(hero.games) || 0,
