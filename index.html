@@ -446,7 +446,6 @@ function statusStep(message) {
 const fmtPct = n => `${((n || 0) * 100).toFixed(1)}%`;
 const pad = n => String(n).padStart(2, '0');
 const fmtDur = s => `${Math.floor(s / 60)}:${pad(s % 60)}`;
-const fmtDate = ts => ts ? new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 const heroName = id => HEROES[id]?.localized_name || 'Unknown';
 const heroKey = id => HEROES[id]?.name?.replace('npc_dota_hero_', '') || 'abaddon';
 const heroImg = id => `https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${heroKey(id)}.png`;
@@ -728,8 +727,6 @@ function renderFeed(players) {
           </div>
           <div class="post-meta">
             <span class="match-duration">${fmtDur(group.match.duration || 0)}</span>
-            <span>${fmtDate(group.match.start_time)}</span>
-            
           </div>
         </div>
         <div class="post-players">
