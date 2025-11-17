@@ -491,6 +491,10 @@ function fmtRelativeTime(timestamp) {
   return `${days}d ago`;
 }
 
+// Backward compatibility helper for older render paths that still expect timeAgo.
+// Keeps snapshots loading even if a stale bundle references the previous name.
+const timeAgo = fmtRelativeTime;
+
 function formatMatchLevel(match) {
   if (!match) return '—';
   const directLevel = Number(match.level);
