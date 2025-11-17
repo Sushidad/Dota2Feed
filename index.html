@@ -123,6 +123,21 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .post-avatars img { width: 34px; height: 34px; border-radius: 50%; border: 2px solid #111827; margin-left: -8px; object-fit: cover; }
 .post-avatars img:first-child { margin-left: 0; }
 .match-duration { font-weight: 600; color: var(--text); }
+.stack-chip { background: rgba(124, 58, 237, .16); border: 1px solid rgba(124, 58, 237, .4); color: #c4b5fd; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 700; letter-spacing: .03em; display: inline-flex; align-items: center; gap: 6px; }
+.stack-chip .count { font-weight: 900; color: #fff; }
+.post.stacked { border-style: dashed; }
+.stacked-matches { display: flex; flex-direction: column; gap: 10px; }
+.stacked-match { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; background: #0c1422; border: 1px solid #1f2937; box-shadow: 0 6px 14px rgba(0, 0, 0, .25); }
+.stacked-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.stacked-hero { width: 46px; height: 46px; border-radius: 12px; object-fit: cover; box-shadow: 0 6px 14px rgba(0, 0, 0, .35); }
+.stacked-meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.stacked-hero-name { font-weight: 700; color: var(--text); }
+.stacked-detail { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
+.stacked-result { font-weight: 800; text-transform: uppercase; }
+.stacked-result.win { color: var(--good); }
+.stacked-result.lose { color: var(--bad); }
+.stacked-kda { font-weight: 800; color: var(--text); }
+
 
 .post-players { display: flex; flex-direction: column; gap: 16px; }
 .player-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; padding: 14px 16px; border-radius: 16px; background: #0c1422; border: 1px solid #1f2937; box-shadow: 0 10px 24px rgba(0, 0, 0, .2); }
@@ -666,11 +681,27 @@ function renderFeed(players) {
   const posts = [...groups.values()]
     .sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0))
     .slice(0, FEED_POST_LIMIT);
+  const stackedPosts = [];
+  for (const post of posts) {
+    const isSolo = post.players.length === 1;
+    if (!isSolo) {
+      stackedPosts.push({ type: 'single', post });
+      continue;
+    }
+    const player = post.players[0]?.player;
+    const last = stackedPosts[stackedPosts.length - 1];
+    if (last?.type === 'stack' && last.player?.id === player?.id) {
+      last.entries.push(post);
+    } else {
+      stackedPosts.push({ type: 'stack', player, entries: [post] });
+    }
+  }
   if (posts.length === 0) {
     feed.innerHTML = '<div class="note">No recent matches to display.</div>';
     return;
   }
-  feed.innerHTML = posts.map(group => {
+
+  const renderPost = group => {
     const wins = group.players.filter(x => isWin(x.match)).length;
     const losses = group.players.length - wins;
     const mode = wins && losses ? 'mixed' : wins ? 'win' : 'lose';
@@ -733,7 +764,58 @@ function renderFeed(players) {
           ${playersMarkup}
         </div>
       </article>`;
-  }).join('');
+  };
+
+  const renderStacked = stack => {
+    const matches = stack.entries || [];
+    const sample = matches[0];
+    const player = stack.player || sample?.players?.[0]?.player;
+    const persona = player?.profile?.profile?.personaname || 'Unknown';
+    const avatar = player?.profile?.profile?.avatarfull || '';
+    const wins = matches.filter(entry => isWin(entry.players[0].match)).length;
+    const losses = matches.length - wins;
+    const mode = wins && losses ? 'mixed' : wins ? 'win' : 'lose';
+    const badgeText = wins && losses ? 'MIXED' : wins ? 'WIN' : 'LOSS';
+    const stackLabel = `${matches.length} game${matches.length === 1 ? '' : 's'}`;
+    const timeline = matches.map(entry => {
+      const match = entry.match;
+      const hero = heroName(match.hero_id);
+      const heroSrc = heroImg(match.hero_id);
+      const level = formatMatchLevel(match);
+      const duration = fmtDur(match.duration || 0);
+      const result = isWin(entry.players[0].match) ? 'win' : 'lose';
+      const kda = `${match.kills ?? 0}/${match.deaths ?? 0}/${match.assists ?? 0}`;
+      return `
+        <div class="stacked-match">
+          <div class="stacked-left">
+            <img class="stacked-hero" src="${heroSrc}" alt="${escapeHtml(hero)}">
+            <div class="stacked-meta">
+              <div class="stacked-hero-name">${escapeHtml(hero)}</div>
+              <div class="stacked-detail">
+                <span class="stacked-result ${result}">${result === 'win' ? 'WIN' : 'LOSS'}</span>
+                <span>Level ${level}</span>
+                <span>${duration}</span>
+              </div>
+            </div>
+          </div>
+          <div class="stacked-kda">${kda}</div>
+        </div>`;
+    }).join('');
+    return `
+      <article class="post ${mode} stacked">
+        <div class="post-header">
+          <div class="post-title">
+            <span class="badge ${mode}">${badgeText}</span>
+            <div class="post-avatars"><img src="${avatar}" alt="${escapeHtml(persona)}"></div>
+            <div class="post-names"><span>${escapeHtml(persona)}</span></div>
+            <span class="stack-chip"><span class="count">${matches.length}×</span> Solo stack · ${escapeHtml(stackLabel)}</span>
+          </div>
+        </div>
+        <div class="stacked-matches">${timeline}</div>
+      </article>`;
+  };
+
+  feed.innerHTML = stackedPosts.map(item => item.type === 'stack' ? renderStacked(item) : renderPost(item.post)).join('');
 }
 
 function openModal(title, bodyHtml) {
