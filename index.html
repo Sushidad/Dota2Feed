@@ -29,7 +29,7 @@ body {
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial;
 }
 
-.container { max-width: 1500px; margin: 0 auto; padding: 26px 32px; }
+.container { max-width: 1700px; margin: 0 auto; padding: 26px 32px; }
 header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .title { font-weight: 800; font-size: clamp(22px, 4vw, 34px); }
 .subtitle { color: var(--muted); }
@@ -50,10 +50,10 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 
 .grid { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: flex-start; }
 @media (min-width: 1080px) {
-  .grid { grid-template-columns: minmax(320px, 420px) minmax(0, 1.9fr); }
+  .grid { grid-template-columns: minmax(320px, 420px) minmax(0, 2.3fr); }
 }
 @media (min-width: 1480px) {
-  .grid { grid-template-columns: minmax(340px, 460px) minmax(0, 2.4fr) minmax(300px, 360px); }
+  .grid { grid-template-columns: minmax(320px, 420px) minmax(0, 3fr) minmax(280px, 340px); }
 }
 .card { background: var(--card); border: 1px solid #1f2937; border-radius: 18px; padding: 16px; overflow: hidden; }
 
@@ -107,8 +107,9 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .post.win { border-left: 5px solid var(--good); }
 .post.lose { border-left: 5px solid var(--bad); }
 .post.mixed { border-left: 5px solid #facc15; }
-.post-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.post-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; font-weight: 600; }
+.post-header { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.post-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 16px; font-weight: 700; }
+.post-headline { font-weight: 800; font-size: 16px; letter-spacing: -.01em; }
 .post-names { display: flex; flex-wrap: wrap; gap: 6px; }
 .post-names span { background: #111a2a; border-radius: 999px; padding: 4px 10px; font-size: 12px; }
 .post-meta { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
@@ -123,20 +124,21 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .post-avatars img { width: 34px; height: 34px; border-radius: 50%; border: 2px solid #111827; margin-left: -8px; object-fit: cover; }
 .post-avatars img:first-child { margin-left: 0; }
 .match-duration { font-weight: 600; color: var(--text); }
+.meta-chip { background: #111a2a; border: 1px solid #1f2937; padding: 4px 8px; border-radius: 10px; color: var(--muted); font-weight: 600; letter-spacing: .03em; }
 .group-chip { background: rgba(124, 58, 237, .16); border: 1px solid rgba(124, 58, 237, .4); color: #c4b5fd; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 700; letter-spacing: .03em; display: inline-flex; align-items: center; gap: 6px; }
 .group-chip .count { font-weight: 900; color: #fff; }
 .post.grouped { border: 1px solid #1f2937; box-shadow: 0 0 0 2px rgba(124, 58, 237, .35), 0 10px 24px rgba(0, 0, 0, .25); }
 .grouped-matches { display: flex; flex-direction: column; gap: 10px; }
-.grouped-match { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 12px; border-radius: 14px; background: #0c1422; border: 1px solid #1f2937; box-shadow: 0 6px 14px rgba(0, 0, 0, .25); }
+.grouped-match { display: grid; grid-template-columns: minmax(280px, 1.4fr) minmax(340px, 1fr); gap: 14px; align-items: flex-start; padding: 12px; border-radius: 14px; background: #0c1422; border: 1px solid #1f2937; box-shadow: 0 6px 14px rgba(0, 0, 0, .25); }
 .grouped-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.grouped-hero { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; box-shadow: 0 6px 14px rgba(0, 0, 0, .35); }
-.grouped-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.grouped-hero { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; box-shadow: 0 6px 14px rgba(0, 0, 0, .35); flex-shrink: 0; }
+.grouped-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
 .grouped-hero-name { font-weight: 700; color: var(--text); }
 .grouped-detail { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .grouped-result { font-weight: 800; text-transform: uppercase; padding: 4px 10px; border-radius: 10px; background: #111a2a; border: 1px solid #1f2937; }
 .grouped-result.win { color: var(--good); border-color: rgba(34, 197, 94, .45); }
 .grouped-result.lose { color: var(--bad); border-color: rgba(239, 68, 68, .45); }
-.grouped-stats { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.grouped-stats { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; }
 .kda-chip.mini { min-width: 0; padding: 6px 10px; }
 .metric-chip.mini { font-size: 10px; padding: 4px 8px; }
 
@@ -167,6 +169,11 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
   .player-stats { align-items: flex-start; }
   .player-extra { justify-content: flex-start; }
   .kda-group { justify-content: flex-start; }
+}
+
+@media (max-width: 1180px) {
+  .grouped-match { grid-template-columns: 1fr; }
+  .grouped-stats { justify-content: flex-start; }
 }
 
 .note { background: linear-gradient(180deg, rgba(76, 29, 149, .22), rgba(76, 29, 149, .05)); border: 1px solid #382766; padding: 10px; border-radius: 12px; text-align: center; }
@@ -484,6 +491,24 @@ function fmtRelativeTime(timestamp) {
   return `${days}d ago`;
 }
 
+// Backward compatibility helper for older render paths that still expect timeAgo.
+// Keeps snapshots loading even if a stale bundle references the previous name.
+const timeAgo = fmtRelativeTime;
+
+function stripLeakedCode(container) {
+  if (!container) return;
+  const walker = document.createTreeWalker(container, Node.TEXT_NODE, null);
+  const toRemove = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const value = node?.textContent || '';
+    if (value.includes('function fmtRelativeTime')) {
+      toRemove.push(node);
+    }
+  }
+  toRemove.forEach(node => node.parentNode?.removeChild(node));
+}
+
 function formatMatchLevel(match) {
   if (!match) return '—';
   const directLevel = Number(match.level);
@@ -669,6 +694,12 @@ function renderFeed(players) {
   const feed = document.getElementById('feed');
   if (!feed) return;
   feed.innerHTML = '';
+  const formatNameList = (names = []) => {
+    if (names.length === 0) return '';
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  };
   const groups = new Map();
   for (const player of players) {
     const validMatches = filterRealGames(player.matches || []);
@@ -680,11 +711,10 @@ function renderFeed(players) {
       groups.get(key).players.push({ player, match });
     }
   }
-  const posts = [...groups.values()]
-    .sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0))
-    .slice(0, FEED_POST_LIMIT);
+  const sortedPosts = [...groups.values()]
+    .sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0));
   const groupedPosts = [];
-  for (const post of posts) {
+  for (const post of sortedPosts) {
     const isSolo = post.players.length === 1;
     if (!isSolo) {
       groupedPosts.push({ type: 'single', post });
@@ -697,6 +727,9 @@ function renderFeed(players) {
     } else {
       groupedPosts.push({ type: 'group', player, entries: [post] });
     }
+    if (groupedPosts.length >= FEED_POST_LIMIT) {
+      break;
+    }
   }
   const normalizedPosts = groupedPosts.flatMap(item => {
     if (item.type === 'group' && (item.entries?.length || 0) <= 1) {
@@ -705,7 +738,7 @@ function renderFeed(players) {
     }
     return [item];
   });
-  if (posts.length === 0) {
+  if (groupedPosts.length === 0) {
     feed.innerHTML = '<div class="note">No recent matches to display.</div>';
     return;
   }
@@ -717,10 +750,23 @@ function renderFeed(players) {
     const badgeText = wins && losses ? 'MIXED' : wins ? 'WIN' : 'LOSS';
     const personas = group.players.map(x => x.player.profile?.profile?.personaname || 'Unknown');
     const names = personas.map(name => `<span>${escapeHtml(name)}</span>`).join('');
+    const nameList = formatNameList(personas);
     const avatarList = group.players.map(({ player }) => {
       const persona = player.profile?.profile?.personaname || 'Unknown';
       return `<img src="${player.profile?.profile?.avatarfull || ''}" alt="${escapeHtml(persona)}">`;
     }).join('');
+    const heroList = group.players.map(x => heroName(x.match.hero_id));
+    const uniqueHeroes = [...new Set(heroList)];
+    const heroSummary = (() => {
+      if (!uniqueHeroes.length) return '';
+      if (uniqueHeroes.length === 1) return ` as ${uniqueHeroes[0]}`;
+      if (uniqueHeroes.length === 2) return ` on ${uniqueHeroes[0]} and ${uniqueHeroes[1]}`;
+      return ` across ${uniqueHeroes.length} heroes`;
+    })();
+    const duration = fmtDur(group.match.duration || 0);
+    const headline = mode === 'mixed'
+      ? `${nameList} clashed in a game${heroSummary}.`
+      : `${nameList} ${mode === 'win' ? 'won' : 'lost'} a game${heroSummary}.`;
     const playersMarkup = group.players.map(({ player, match }) => {
       const persona = player.profile?.profile?.personaname || 'Unknown';
       const hero = heroName(match.hero_id);
@@ -762,11 +808,12 @@ function renderFeed(players) {
         <div class="post-header">
           <div class="post-title">
             <span class="badge ${mode}">${badgeText}</span>
-            <div class="post-avatars">${avatarList}</div>
-            <div class="post-names">${names}</div>
+            <div class="post-headline">${escapeHtml(headline)}</div>
           </div>
           <div class="post-meta">
-            <span class="match-duration">${fmtDur(group.match.duration || 0)}</span>
+            <div class="post-avatars">${avatarList}</div>
+            <div class="post-names">${names}</div>
+            <span class="match-duration">${duration}</span>
           </div>
         </div>
         <div class="post-players">
@@ -786,6 +833,14 @@ function renderFeed(players) {
     const mode = wins && losses ? 'mixed' : wins ? 'win' : 'lose';
     const record = `${wins} - ${losses}`;
     const groupLabel = `${matches.length} game${matches.length === 1 ? '' : 's'}`;
+    const heroPool = [...new Set(matches.map(entry => heroName(entry.match.hero_id)))];
+    const heroSummary = (() => {
+      if (!heroPool.length) return '';
+      if (heroPool.length === 1) return ` on ${heroPool[0]}`;
+      if (heroPool.length === 2) return ` on ${heroPool[0]} and ${heroPool[1]}`;
+      return ` across ${heroPool.length} heroes`;
+    })();
+    const headline = `${persona} played ${matches.length} games and went ${record}${heroSummary}.`;
     const timeline = matches.map(entry => {
       const match = entry.match;
       const hero = heroName(match.hero_id);
@@ -826,6 +881,9 @@ function renderFeed(players) {
         <div class="post-header">
           <div class="post-title">
             <span class="badge ${mode}">${record}</span>
+            <div class="post-headline">${escapeHtml(headline)}</div>
+          </div>
+          <div class="post-meta">
             <div class="post-avatars"><img src="${avatar}" alt="${escapeHtml(persona)}"></div>
             <div class="post-names"><span>${escapeHtml(persona)}</span></div>
             <span class="group-chip"><span class="count">${matches.length}×</span> Solo group · ${escapeHtml(groupLabel)}</span>
@@ -836,6 +894,7 @@ function renderFeed(players) {
   };
 
   feed.innerHTML = normalizedPosts.map(item => item.type === 'group' ? renderGrouped(item) : renderPost(item.post)).join('');
+  stripLeakedCode(feed);
 }
 
 function openModal(title, bodyHtml) {
