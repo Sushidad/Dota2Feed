@@ -495,6 +495,20 @@ function fmtRelativeTime(timestamp) {
 // Keeps snapshots loading even if a stale bundle references the previous name.
 const timeAgo = fmtRelativeTime;
 
+function stripLeakedCode(container) {
+  if (!container) return;
+  const walker = document.createTreeWalker(container, Node.TEXT_NODE, null);
+  const toRemove = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const value = node?.textContent || '';
+    if (value.includes('function fmtRelativeTime')) {
+      toRemove.push(node);
+    }
+  }
+  toRemove.forEach(node => node.parentNode?.removeChild(node));
+}
+
 function formatMatchLevel(match) {
   if (!match) return '—';
   const directLevel = Number(match.level);
@@ -879,6 +893,7 @@ function renderFeed(players) {
   };
 
   feed.innerHTML = normalizedPosts.map(item => item.type === 'group' ? renderGrouped(item) : renderPost(item.post)).join('');
+  stripLeakedCode(feed);
 }
 
 function openModal(title, bodyHtml) {
