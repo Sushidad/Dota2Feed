@@ -711,11 +711,10 @@ function renderFeed(players) {
       groups.get(key).players.push({ player, match });
     }
   }
-  const posts = [...groups.values()]
-    .sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0))
-    .slice(0, FEED_POST_LIMIT);
+  const sortedPosts = [...groups.values()]
+    .sort((a, b) => (b.match.start_time || 0) - (a.match.start_time || 0));
   const groupedPosts = [];
-  for (const post of posts) {
+  for (const post of sortedPosts) {
     const isSolo = post.players.length === 1;
     if (!isSolo) {
       groupedPosts.push({ type: 'single', post });
@@ -728,6 +727,9 @@ function renderFeed(players) {
     } else {
       groupedPosts.push({ type: 'group', player, entries: [post] });
     }
+    if (groupedPosts.length >= FEED_POST_LIMIT) {
+      break;
+    }
   }
   const normalizedPosts = groupedPosts.flatMap(item => {
     if (item.type === 'group' && (item.entries?.length || 0) <= 1) {
@@ -736,7 +738,7 @@ function renderFeed(players) {
     }
     return [item];
   });
-  if (posts.length === 0) {
+  if (groupedPosts.length === 0) {
     feed.innerHTML = '<div class="note">No recent matches to display.</div>';
     return;
   }
