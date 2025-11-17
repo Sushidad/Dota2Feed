@@ -29,7 +29,7 @@ body {
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial;
 }
 
-.container { max-width: 1500px; margin: 0 auto; padding: 26px 32px; }
+.container { max-width: 1700px; margin: 0 auto; padding: 26px 32px; }
 header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .title { font-weight: 800; font-size: clamp(22px, 4vw, 34px); }
 .subtitle { color: var(--muted); }
@@ -50,10 +50,10 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 
 .grid { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: flex-start; }
 @media (min-width: 1080px) {
-  .grid { grid-template-columns: minmax(320px, 420px) minmax(0, 1.9fr); }
+  .grid { grid-template-columns: minmax(320px, 420px) minmax(0, 2.3fr); }
 }
 @media (min-width: 1480px) {
-  .grid { grid-template-columns: minmax(340px, 460px) minmax(0, 2.4fr) minmax(300px, 360px); }
+  .grid { grid-template-columns: minmax(320px, 420px) minmax(0, 3fr) minmax(280px, 340px); }
 }
 .card { background: var(--card); border: 1px solid #1f2937; border-radius: 18px; padding: 16px; overflow: hidden; }
 
@@ -129,16 +129,16 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
 .group-chip .count { font-weight: 900; color: #fff; }
 .post.grouped { border: 1px solid #1f2937; box-shadow: 0 0 0 2px rgba(124, 58, 237, .35), 0 10px 24px rgba(0, 0, 0, .25); }
 .grouped-matches { display: flex; flex-direction: column; gap: 10px; }
-.grouped-match { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; border-radius: 14px; background: #0c1422; border: 1px solid #1f2937; box-shadow: 0 6px 14px rgba(0, 0, 0, .25); }
+.grouped-match { display: grid; grid-template-columns: minmax(280px, 1.4fr) minmax(340px, 1fr); gap: 14px; align-items: flex-start; padding: 12px; border-radius: 14px; background: #0c1422; border: 1px solid #1f2937; box-shadow: 0 6px 14px rgba(0, 0, 0, .25); }
 .grouped-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.grouped-hero { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; box-shadow: 0 6px 14px rgba(0, 0, 0, .35); }
-.grouped-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.grouped-hero { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; box-shadow: 0 6px 14px rgba(0, 0, 0, .35); flex-shrink: 0; }
+.grouped-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
 .grouped-hero-name { font-weight: 700; color: var(--text); }
 .grouped-detail { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .grouped-result { font-weight: 800; text-transform: uppercase; padding: 4px 10px; border-radius: 10px; background: #111a2a; border: 1px solid #1f2937; }
 .grouped-result.win { color: var(--good); border-color: rgba(34, 197, 94, .45); }
 .grouped-result.lose { color: var(--bad); border-color: rgba(239, 68, 68, .45); }
-.grouped-stats { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.grouped-stats { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; }
 .kda-chip.mini { min-width: 0; padding: 6px 10px; }
 .metric-chip.mini { font-size: 10px; padding: 4px 8px; }
 
@@ -171,7 +171,7 @@ header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-
   .kda-group { justify-content: flex-start; }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1180px) {
   .grouped-match { grid-template-columns: 1fr; }
   .grouped-stats { justify-content: flex-start; }
 }
@@ -735,7 +735,6 @@ function renderFeed(players) {
       const persona = player.profile?.profile?.personaname || 'Unknown';
       return `<img src="${player.profile?.profile?.avatarfull || ''}" alt="${escapeHtml(persona)}">`;
     }).join('');
-    const timeAgo = group.match?.start_time ? fmtRelativeTime(group.match.start_time * 1000) : '';
     const heroList = group.players.map(x => heroName(x.match.hero_id));
     const uniqueHeroes = [...new Set(heroList)];
     const heroSummary = (() => {
@@ -746,8 +745,8 @@ function renderFeed(players) {
     })();
     const duration = fmtDur(group.match.duration || 0);
     const headline = mode === 'mixed'
-      ? `${nameList} clashed in a ${duration} game${heroSummary}.`
-      : `${nameList} ${mode === 'win' ? 'won' : 'lost'} a ${duration} game${heroSummary}.`;
+      ? `${nameList} clashed in a game${heroSummary}.`
+      : `${nameList} ${mode === 'win' ? 'won' : 'lost'} a game${heroSummary}.`;
     const playersMarkup = group.players.map(({ player, match }) => {
       const persona = player.profile?.profile?.personaname || 'Unknown';
       const hero = heroName(match.hero_id);
@@ -795,7 +794,6 @@ function renderFeed(players) {
             <div class="post-avatars">${avatarList}</div>
             <div class="post-names">${names}</div>
             <span class="match-duration">${duration}</span>
-            ${timeAgo ? `<span class="meta-chip">${escapeHtml(timeAgo)}</span>` : ''}
           </div>
         </div>
         <div class="post-players">
@@ -815,7 +813,6 @@ function renderFeed(players) {
     const mode = wins && losses ? 'mixed' : wins ? 'win' : 'lose';
     const record = `${wins} - ${losses}`;
     const groupLabel = `${matches.length} game${matches.length === 1 ? '' : 's'}`;
-    const timeAgo = sample?.match?.start_time ? fmtRelativeTime(sample.match.start_time * 1000) : '';
     const heroPool = [...new Set(matches.map(entry => heroName(entry.match.hero_id)))];
     const heroSummary = (() => {
       if (!heroPool.length) return '';
