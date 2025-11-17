@@ -498,7 +498,7 @@ const timeAgo = fmtRelativeTime;
 
 function stripLeakedCode(container) {
   if (!container) return;
-  const walker = document.createTreeWalker(container, Node.TEXT_NODE, null);
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
   const toRemove = [];
   while (walker.nextNode()) {
     const node = walker.currentNode;
