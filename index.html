@@ -867,6 +867,7 @@ function renderFeed(players) {
             <div class="post-avatars"><img src="${avatar}" alt="${escapeHtml(persona)}"></div>
             <div class="post-names"><span>${escapeHtml(persona)}</span></div>
             <span class="group-chip"><span class="count">${matches.length}×</span> Solo group · ${escapeHtml(groupLabel)}</span>
+            ${timeAgo ? `<span class="meta-chip">${escapeHtml(timeAgo)}</span>` : ''}
           </div>
         </div>
         <div class="grouped-matches">${timeline}</div>
