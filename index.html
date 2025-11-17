@@ -399,8 +399,9 @@ async function ensureSnapshot({ force = false } = {}) {
     return SNAPSHOT;
   }
   if (!snapshotPromise) {
-    const fetchOptions = force ? { cache: 'no-store' } : {};
-    snapshotPromise = fetch(DATA_URL, fetchOptions)
+    const cacheToken = Date.now();
+    const url = `${DATA_URL}?v=${cacheToken}`;
+    snapshotPromise = fetch(url, { cache: 'no-store' })
       .then(response => {
         if (!response.ok) {
           throw new Error(`Failed to load data.json (${response.status})`);
