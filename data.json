@@ -1,5 +1,5 @@
 {
-  "lastUpdated": 1784974908517,
+  "lastUpdated": 1784980680339,
   "players": [
     {
       "id": 39984287,
@@ -23814,7 +23814,7 @@
     }
   ],
   "proMeta": {
-    "timestamp": 1784974941660,
+    "timestamp": 1784980713120,
     "heroes": [
       {
         "hero_id": 155,
@@ -24018,7 +24018,7 @@
     "players": {}
   },
   "fetchInfo": {
-    "runtimeMs": 33147,
+    "runtimeMs": 32784,
     "apiCalls": 29,
     "status": "complete"
   }
